@@ -126,6 +126,7 @@ export function StatementPdfSource({ accounts, cards, plans, hints, seen, onRead
       'To account or card': r.to,
       Description: r.text,
       Details: r.needsPlan ? NEEDS_PLAN : '',
+      Installment: r.installment ? `${r.installment.k}/${r.installment.total}` : '',
       Owner: '',
       Statement: r.statement,
       Counterparty: r.counterparty ?? '',

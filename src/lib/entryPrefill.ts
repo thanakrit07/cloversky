@@ -13,4 +13,6 @@ export interface EntryPrefill {
   ownerId: string | null
   from: Instrument
   date: string
+  /** How many periods, when the plan's length is already known (a statement prints it). */
+  periods?: number
 }

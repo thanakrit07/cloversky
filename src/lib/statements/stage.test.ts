@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseCardx } from './cardx'
 import { parseKbank } from './kbank'
 import { parseKtc } from './ktc'
-import { stageStatements, type StageContext } from './stage'
+import { planCovers, planStartFor, stageStatements, withoutPeriodMarker, type StageContext } from './stage'
 
 // Every line, name and amount below is invented.
 const ASOF = '2026-09-27'
@@ -143,5 +143,25 @@ describe('across files', () => {
     const { issues } = stageStatements([{ instrument: 'KTC', result: orphan }], ctx())
     expect(issues).toHaveLength(1)
     expect(issues[0]).toMatchObject({ code: 'orphan_conversion', date: '2026-04-26', amount: 1234, reason: expect.stringContaining('no matching purchase') })
+  })
+})
+
+describe('making a plan from an installment line', () => {
+  it('carries which period of how many onto the row', () => {
+    const cardx = parseCardx(['23/09/26 1,000.00 100.00 13/10/26', '04/09 04/09 DEMO SOFA 002/006 200.00'], ASOF)!
+    expect(stageStatements([{ instrument: 'CardX', result: cardx }], ctx()).rows[0]).toMatchObject({ needsPlan: true, installment: { k: 2, total: 6 } })
+  })
+  it('starts the plan k−1 months before the period, so the plan covers the line it came from', () => {
+    expect(planStartFor('2026-09-04', 3)).toBe('2026-07-04')
+    expect(planStartFor('2026-01-15', 2)).toBe('2025-12-15')
+    expect(planStartFor('2026-09-04', 1)).toBe('2026-09-04')
+    const plans = [{ instrument: 'CardX', total: 6, startDate: planStartFor('2026-09-04', 3) }]
+    expect(planCovers(plans, 'CardX', { k: 3, total: 6 }, '2026-09-04')).toBe(true)
+    expect(planCovers(plans, 'KTC', { k: 3, total: 6 }, '2026-09-04')).toBe(false)
+  })
+  it('names the plan after the shop, without the period marker either bank prints', () => {
+    expect(withoutPeriodMarker('DEMO SOFA 002/006')).toBe('DEMO SOFA')
+    expect(withoutPeriodMarker('02/06 DEMO SOFA')).toBe('DEMO SOFA')
+    expect(withoutPeriodMarker('DEMO 24/7 SHOP')).toBe('DEMO 24/7 SHOP')
   })
 })

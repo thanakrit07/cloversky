@@ -10,7 +10,10 @@ import { useCategories } from '@/lib/categories'
 import { addDays } from '@/lib/finance/billingCycle'
 import { formatBaht } from '@/lib/format'
 import { useHousehold } from '@/lib/HouseholdContext'
+import type { EntryPrefill } from '@/lib/entryPrefill'
 import { useInstallments } from '@/lib/installments'
+import { InstallmentSheet } from '@/features/installments/InstallmentSheet'
+import { planCovers, planStartFor, withoutPeriodMarker, type PlanRef } from '@/lib/statements/stage'
 import { parseCsvText } from '@/lib/import/parseCsv'
 import { applyCounterparties, applyStatementRows, buildStatementRows, normalizeStatementText, SHARED, unknownNames, type StatementRow } from '@/lib/statementImport'
 import {
@@ -28,7 +31,7 @@ import { cn } from '@/lib/utils'
 import { StatementPdfSource, type StatementWarning } from './StatementPdfSource'
 import { UnknownNames } from './UnknownNames'
 import { WhoIsThis } from './WhoIsThis'
-import { removeSuperseded, useSupersededCandidates, type OrphanConversion } from '@/lib/superseded'
+import { hasPlanNear, periodLineFor, removeSuperseded, useSupersededCandidates, type OrphanConversion, type SupersededCandidate } from '@/lib/superseded'
 
 type Tab = 'review' | 'new' | 'imported'
 const TAB_OF: Record<StatementRow['status'], Tab> = { error: 'review', match: 'review', review: 'review', new: 'new', imported: 'imported' }
@@ -113,6 +116,8 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   }, [csvRows, accepted, categoryOverride, whoOverride, warnings, fileMeta, orphans, supersede])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [applying, setApplying] = useState(false)
+  // The installment plan being made from this review, and the expense it replaces.
+  const [planFrom, setPlanFrom] = useState<{ prefill: EntryPrefill; supersedes?: string } | null>(null)
 
   // What the household has said about names, applied before rows are built so a
   // transfer to its own other account is a transfer, and keys never notice.
@@ -133,10 +138,24 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   }, [records])
   const { data: existing } = useTransactions(householdId, range)
 
+  // The plans the app already has, by the name of the card or account they sit on.
+  const plans = useMemo<PlanRef[]>(
+    () =>
+      (installments ?? []).flatMap((i) => {
+        const instrument = (cards ?? []).find((c) => c.id === i.card_id)?.name ?? (accounts ?? []).find((a) => a.id === i.account_id)?.name
+        return instrument ? [{ instrument, total: i.total_periods, startDate: i.start_date }] : []
+      }),
+    [installments, cards, accounts],
+  )
+
   const rows = useMemo(() => {
     if (!records || !accounts || !cards || !categories || !existing) return null
-    return buildStatementRows(records, { accounts, cards, categories, existing })
-  }, [records, accounts, cards, categories, existing])
+    const nameOf = (r: StatementRow) => accounts.find((a) => a.id === r.fromAccountId)?.name ?? cards.find((c) => c.id === r.fromCardId)?.name ?? ''
+    // A plan made since the files were read posts these periods itself, so they leave the review.
+    return buildStatementRows(records, { accounts, cards, categories, existing }).filter(
+      (r) => !(r.needsPlan && r.installment && planCovers(plans, nameOf(r), r.installment, r.postedDate ?? r.date)),
+    )
+  }, [records, accounts, cards, categories, existing, plans])
 
   const liveCategories = useMemo(() => (categories ?? []).filter((c) => !c.archived && !c.system), [categories])
   const categoryById = useMemo(() => new Map((categories ?? []).map((c) => [c.id, c])), [categories])
@@ -155,12 +174,41 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   const instrumentName = (accountId: string | null, cardId: string | null) =>
     (accounts ?? []).find((a) => a.id === accountId)?.name ?? (cards ?? []).find((c) => c.id === cardId)?.name ?? '—'
 
+  const startOf = (r: StatementRow) => planStartFor(r.postedDate ?? r.date, r.installment!.k)
+  const totalOf = (r: StatementRow) => Math.round(r.amount * r.installment!.total * 100) / 100
+  // Everything the statement line already says about the plan: card, periods, amount, start.
+  const prefillFromLine = (r: StatementRow): EntryPrefill => {
+    const who = whoOf(r)
+    return {
+      name: withoutPeriodMarker(r.description),
+      kind: 'expense',
+      categoryId: categoryOverride.get(r.line) ?? r.categoryId,
+      amount: totalOf(r),
+      ownerId: who === SHARED ? null : who,
+      from: { accountId: r.fromAccountId, cardId: r.fromCardId },
+      date: startOf(r),
+      periods: r.installment!.total,
+    }
+  }
+  // The purchase already in the ledger keeps its name, category and who bears it;
+  // the period line it became, when it is in this import, says how long and from when.
+  const prefillFromPurchase = (orphan: OrphanConversion, c: SupersededCandidate): EntryPrefill => {
+    const from = idsOf(orphan.instrument)
+    const sameCard = (rows ?? []).filter((r) => r.needsPlan && r.fromAccountId === from.accountId && r.fromCardId === from.cardId)
+    const line = periodLineFor(orphan, sameCard, startOf)
+    return {
+      name: c.description || c.note || (line ? withoutPeriodMarker(line.description) : ''),
+      kind: 'expense',
+      categoryId: c.category_id,
+      amount: line ? totalOf(line) : orphan.amount,
+      ownerId: c.owner_id,
+      from,
+      date: line ? startOf(line) : orphan.date,
+      periods: line?.installment?.total,
+    }
+  }
+
   if (!csvRows) {
-    // The plans the app already has, by the name of the card or account they sit on.
-    const plans = (installments ?? []).flatMap((i) => {
-      const instrument = (cards ?? []).find((c) => c.id === i.card_id)?.name ?? (accounts ?? []).find((a) => a.id === i.account_id)?.name
-      return instrument ? [{ instrument, total: i.total_periods, startDate: i.start_date }] : []
-    })
     return (
       <div>
         <StatementPdfSource
@@ -242,7 +290,9 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
         whoOf,
       })
       await recordStatementFiles(householdId, self.id, fileMeta)
-      await removeSuperseded([...supersede])
+      // Only where a plan already stands in for the expense: a tick left in an older draft is not enough.
+      const removable = new Set((supersededFound ?? []).filter((f) => hasPlanNear(f.orphan, plans)).flatMap((f) => f.candidates.map((c) => c.id)))
+      await removeSuperseded([...supersede].filter((id) => removable.has(id)))
       await queryClient.invalidateQueries({ queryKey: ['transactions', householdId] })
       await queryClient.invalidateQueries({ queryKey: ['statement_files', householdId] })
       await queryClient.invalidateQueries({ queryKey: ['category_hints', householdId] })
@@ -295,7 +345,7 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
         <div className="space-y-2 border-b border-amber-500/40 bg-amber-500/5 p-2 text-xs">
           <p className="font-medium">Purchases that became installments</p>
           <p className="text-muted-foreground">
-            A credit below turns an earlier purchase into an installment. That purchase is already in your records as an ordinary expense, and the installment plan posts every period itself, so keeping both counts it twice. Remove it only if the plan already exists in the app. Nothing is removed unless you tick it and press Apply.
+            A credit below turns an earlier purchase into an installment. That purchase is already in your records as an ordinary expense. Make it a plan and the plan replaces it, so it is not counted twice.
           </p>
           {(supersededFound ?? []).filter((f) => f.candidates.length > 0).map((f, i) => (
             <div key={i} className="space-y-1">
@@ -303,22 +353,33 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
                 Credit of {formatBaht(f.orphan.amount)} on {f.orphan.date} ({f.orphan.instrument}):
               </p>
               {f.candidates.map((c) => (
-                <label key={c.id} className="flex items-center gap-2 pl-3">
-                  <Checkbox
-                    checked={supersede.has(c.id)}
-                    onCheckedChange={(v) =>
-                      setSupersede((prev) => {
-                        const next = new Set(prev)
-                        if (v) next.add(c.id)
-                        else next.delete(c.id)
-                        return next
-                      })
-                    }
-                  />
-                  <span className="min-w-0 flex-1 truncate">
-                    Remove the expense of {c.date}: {c.description || c.note || 'no description'} ({formatBaht(c.amount)})
-                  </span>
-                </label>
+                <div key={c.id} className="space-y-1 pl-3">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate">
+                      Expense of {c.date}: {c.description || c.note || 'no description'} ({formatBaht(c.amount)})
+                    </span>
+                    <Button size="sm" variant="outline" onClick={() => setPlanFrom({ prefill: prefillFromPurchase(f.orphan, c), supersedes: c.id })}>
+                      Make it a plan
+                    </Button>
+                  </div>
+                  {/* Removing the expense alone is only safe when a plan already stands in for it. */}
+                  {hasPlanNear(f.orphan, plans) && (
+                    <label className="flex items-center gap-2 text-muted-foreground">
+                      <Checkbox
+                        checked={supersede.has(c.id)}
+                        onCheckedChange={(v) =>
+                          setSupersede((prev) => {
+                            const next = new Set(prev)
+                            if (v) next.add(c.id)
+                            else next.delete(c.id)
+                            return next
+                          })
+                        }
+                      />
+                      The plan is already in the app: remove this expense on Apply
+                    </label>
+                  )}
+                </div>
               ))}
             </div>
           ))}
@@ -509,6 +570,11 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
                   </td>
                   <td className="p-2">
                     {r.status === 'error' && <span className="text-destructive">{r.issue}</span>}
+                    {r.needsPlan && r.installment && (
+                      <Button size="sm" variant="outline" className="mt-1 block" onClick={() => setPlanFrom({ prefill: prefillFromLine(r) })}>
+                        Create plan
+                      </Button>
+                    )}
                     {r.status === 'imported' && <span className="text-muted-foreground">Already imported</span>}
                     {actionable(r) && (
                       <label className="flex items-center gap-1.5">
@@ -531,6 +597,17 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </div>
+      {planFrom && (
+        <InstallmentSheet
+          installment={null}
+          prefill={planFrom.prefill}
+          supersedes={planFrom.supersedes}
+          onClose={() => {
+            setPlanFrom(null)
+            void queryClient.invalidateQueries({ queryKey: ['superseded', householdId] })
+          }}
+        />
+      )}
     </div>
   )
 }
