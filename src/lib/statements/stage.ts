@@ -19,6 +19,8 @@ export interface StagedRow {
   text: string
   /** An installment the app has no plan for: shown in review, not imported. */
   needsPlan: boolean
+  /** Which period of how many, for an installment line. */
+  installment: { k: number; total: number } | null
   /** The account or card whose statement this line came from; keeps the line's key stable. */
   statement: string
   /** The name after the account on a bank transfer line, as printed. */
@@ -118,11 +120,15 @@ const days = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) /
 const PLAN_WINDOW_DAYS = 20
 
 /** A plan with the same number of periods whose period k falls about when this line posted. */
-function planCovers(plans: PlanRef[], instrument: string, line: StatementLine): boolean {
-  const { k, total } = line.installment!
-  const when = line.postedDate ?? line.date
+export function planCovers(plans: PlanRef[], instrument: string, { k, total }: { k: number; total: number }, when: string): boolean {
   return plans.some((p) => p.instrument === instrument && p.total === total && days(periodDate(p.startDate, k), when) <= PLAN_WINDOW_DAYS)
 }
+
+/** The start date a plan needs for its period k to fall on `when`: k−1 months earlier. */
+export const planStartFor = (when: string, k: number) => periodDate(when, 2 - k)
+
+/** The shop's name without the "002/006" or "02/06" a card prints for the period. */
+export const withoutPeriodMarker = (text: string) => text.replace(/^\d{2,3}\/\d{2,3}\s+|\s+\d{2,3}\/\d{2,3}$/g, '').trim()
 
 export function stageStatements(files: StageInput[], ctx: StageContext): { rows: StagedRow[]; issues: StageIssue[] } {
   const rows: StagedRow[] = []
@@ -163,34 +169,34 @@ export function stageStatements(files: StageInput[], ctx: StageContext): { rows:
       if (isBank(result.layout)) {
         if (l.direction === 'debit') {
           const card = BANK_CARD_PAYMENTS.find((p) => p.re.test(l.text))
-          if (card) rows.push({ ...base, kind: 'transfer', category: '', from: instrument, to: card.to, needsPlan: false })
-          else rows.push({ ...base, kind: 'expense', category: guessCategory(l.text, ctx.hints), from: instrument, to: '', needsPlan: false })
+          if (card) rows.push({ ...base, kind: 'transfer', category: '', from: instrument, to: card.to, needsPlan: false, installment: null })
+          else rows.push({ ...base, kind: 'expense', category: guessCategory(l.text, ctx.hints), from: instrument, to: '', needsPlan: false, installment: null })
         } else {
-          rows.push({ ...base, kind: 'income', category: /PAYROLL|เงินเดือน/i.test(l.text) ? 'Salary' : 'Other', from: instrument, to: '', needsPlan: false })
+          rows.push({ ...base, kind: 'income', category: /PAYROLL|เงินเดือน/i.test(l.text) ? 'Salary' : 'Other', from: instrument, to: '', needsPlan: false, installment: null })
         }
         continue
       }
 
       if (l.installment) {
-        if (planCovers(ctx.plans, instrument, l)) continue // the app posts these itself
-        rows.push({ ...base, kind: 'expense', category: l.isInterest ? 'Card interest' : 'Installments', from: instrument, to: '', needsPlan: true })
+        if (planCovers(ctx.plans, instrument, l.installment, l.postedDate ?? l.date)) continue // the app posts these itself
+        rows.push({ ...base, kind: 'expense', category: l.isInterest ? 'Card interest' : 'Installments', from: instrument, to: '', needsPlan: true, installment: l.installment })
         continue
       }
       if (l.isInterest) {
-        rows.push({ ...base, kind: 'expense', category: 'Card interest', from: instrument, to: '', needsPlan: false })
+        rows.push({ ...base, kind: 'expense', category: 'Card interest', from: instrument, to: '', needsPlan: false, installment: null })
         continue
       }
       if (l.direction === 'credit') {
         if (PAYMENT.test(l.text)) {
           const payer = PAYERS.find((p) => p.re.test(l.text))?.account ?? ''
           if (payer && bankCovers(payer, l.date)) continue // recorded from the bank's statement
-          rows.push({ ...base, kind: 'transfer', category: '', from: payer, to: instrument, needsPlan: false })
+          rows.push({ ...base, kind: 'transfer', category: '', from: payer, to: instrument, needsPlan: false, installment: null })
         } else {
-          rows.push({ ...base, kind: 'income', category: 'Refund', from: instrument, to: '', needsPlan: false })
+          rows.push({ ...base, kind: 'income', category: 'Refund', from: instrument, to: '', needsPlan: false, installment: null })
         }
         continue
       }
-      rows.push({ ...base, kind: 'expense', category: guessCategory(l.text, ctx.hints), from: instrument, to: '', needsPlan: false })
+      rows.push({ ...base, kind: 'expense', category: guessCategory(l.text, ctx.hints), from: instrument, to: '', needsPlan: false, installment: null })
     }
   }
   return { rows, issues }

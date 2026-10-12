@@ -87,7 +87,7 @@ export function InstallmentSheet({ installment, onClose, prefill, supersedes }: 
   const [name, setName] = useState(installment?.name ?? prefill?.name ?? '')
   const [categoryId, setCategoryId] = useState<string | null>(installment?.category_id ?? prefill?.categoryId ?? null)
   const [startDate, setStartDate] = useState(installment?.start_date ?? prefill?.date ?? today())
-  const [totalPeriods, setTotalPeriods] = useState(String(installment?.total_periods ?? 12))
+  const [totalPeriods, setTotalPeriods] = useState(String(installment?.total_periods ?? prefill?.periods ?? 12))
   // Total is the primary way in (whatever the price tag said); typing a
   // known per-period figure instead — the bank's own wording — works too,
   // and whichever one wasn't typed is only ever a computed preview, never

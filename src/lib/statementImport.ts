@@ -44,6 +44,10 @@ export interface StatementRow {
   ownerHint: string
   /** For 'match': the hand-entered row the screen suggests this line is. */
   matchId: string | null
+  /** An installment period the app has no plan for: never imported, the plan posts it. */
+  needsPlan: boolean
+  /** Which period of how many, for an installment line. */
+  installment: { k: number; total: number } | null
 }
 
 export interface StatementContext {
@@ -120,7 +124,10 @@ export function buildStatementRows(rows: Record<string, string>[], ctx: Statemen
       else issues.push(matches.length ? `Category "${categoryName}" is ambiguous` : `Unknown ${kind} category "${categoryName}"`)
     }
 
-    if ((raw['Details'] ?? '').trim() === NEEDS_PLAN) issues.unshift('Installment with no plan in the app — create the plan first')
+    const needsPlan = (raw['Details'] ?? '').trim() === NEEDS_PLAN
+    if (needsPlan) issues.unshift('Installment with no plan in the app — create the plan first')
+    const period = /^(\d+)\/(\d+)$/.exec((raw['Installment'] ?? '').trim())
+    const installment = period ? { k: Number(period[1]), total: Number(period[2]) } : null
 
     // A line's key follows the statement it came from, not how the app has since
     // classified it, so an overlapping statement imported after the household
@@ -178,6 +185,8 @@ export function buildStatementRows(rows: Record<string, string>[], ctx: Statemen
       file: (raw['File'] ?? '').trim(),
       ownerHint: (raw['Owner'] ?? '').trim(),
       matchId,
+      needsPlan,
+      installment,
     }
   })
 }

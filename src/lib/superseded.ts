@@ -21,6 +21,8 @@ export interface SupersededCandidate {
   amount: number
   description: string
   note: string | null
+  category_id: string | null
+  owner_id: string | null
 }
 
 /** How far back before the credit a purchase can be and still be the one it converted. */
@@ -32,6 +34,35 @@ export function candidatesFor(orphan: Pick<OrphanConversion, 'date' | 'amount'>,
   return rows
     .filter((r) => Math.abs(r.amount - orphan.amount) < 0.005 && r.date <= orphan.date && r.date >= earliest)
     .sort((a, b) => (a.date < b.date ? 1 : -1))
+}
+
+/** A statement line for an installment period: which period, what it charged, when. */
+export interface PeriodLine {
+  installment: { k: number; total: number } | null
+  amount: number
+  date: string
+  postedDate: string | null
+}
+
+// ponytail: "the same plan" is guessed from size and timing — the periods add up
+// to the credit give or take interest, and the plan starts within two months of
+// it. Good enough to prefill a form the household still reads before saving.
+const PLAN_TOLERANCE = 0.25
+const PLAN_START_DAYS = 60
+
+/** The installment line on the same card that the credit most likely became, if any. */
+export function periodLineFor<T extends PeriodLine>(orphan: Pick<OrphanConversion, 'date' | 'amount'>, lines: T[], startOf: (line: T) => string): T | null {
+  const gap = (line: T) => Math.abs(Date.parse(startOf(line)) - Date.parse(orphan.date)) / 86_400_000
+  return (
+    lines
+      .filter((l) => l.installment && Math.abs(l.amount * l.installment.total - orphan.amount) <= orphan.amount * PLAN_TOLERANCE && gap(l) <= PLAN_START_DAYS)
+      .sort((a, b) => gap(a) - gap(b))[0] ?? null
+  )
+}
+
+/** Whether the card already has a plan starting about when the credit converted the purchase. */
+export function hasPlanNear(orphan: Pick<OrphanConversion, 'instrument' | 'date'>, plans: { instrument: string; startDate: string }[]): boolean {
+  return plans.some((p) => p.instrument === orphan.instrument && Math.abs(Date.parse(p.startDate) - Date.parse(orphan.date)) / 86_400_000 <= PLAN_START_DAYS)
 }
 
 export interface OrphanWithCandidates {
@@ -54,7 +85,7 @@ export function useSupersededCandidates(
           if (!accountId && !cardId) return { orphan, candidates: [] }
           let query = supabase
             .from('v_transactions')
-            .select('id, date, amount, description, note')
+            .select('id, date, amount, description, note, category_id, owner_id')
             .eq('household_id', householdId)
             .eq('kind', 'expense')
             .neq('source', 'installment') // a plan's own periods are not what it replaced
