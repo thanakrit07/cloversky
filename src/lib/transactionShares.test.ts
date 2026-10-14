@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyRatioSplit, computeShareRows, isValidSplit } from './transactionShares'
+import { applyRatioSplit, computeShareRows, isValidSplit, rescaleShares } from './transactionShares'
 
 const A = 'member-a'
 const B = 'member-b'
@@ -192,5 +192,35 @@ describe('isValidSplit', () => {
       ]),
     ).toBe(false)
     expect(isValidSplit([{ member_id: A, ratio: 0.5 }])).toBe(false)
+  })
+})
+
+describe('rescaleShares', () => {
+  it('keeps each member’s fraction of the whole at the new amount, to the cent', () => {
+    const shares = [
+      { member_id: 'a', share_amount: 70 },
+      { member_id: 'b', share_amount: 30 },
+    ]
+    expect(rescaleShares(shares, 100, 1450)).toEqual([
+      { member_id: 'a', share_amount: 1015 },
+      { member_id: 'b', share_amount: 435 },
+    ])
+  })
+
+  it('sums exactly to the new amount when it does not divide evenly', () => {
+    const shares = [
+      { member_id: 'a', share_amount: 50 },
+      { member_id: 'b', share_amount: 50 },
+    ]
+    const next = rescaleShares(shares, 100, 100.01)
+    expect(next.reduce((sum, s) => sum + Math.round(s.share_amount * 100), 0)).toBe(10001)
+  })
+
+  it('carries a borrow (one person, the whole amount) across', () => {
+    expect(rescaleShares([{ member_id: 'b', share_amount: 99 }], 99, 120)).toEqual([{ member_id: 'b', share_amount: 120 }])
+  })
+
+  it('returns nothing for a row with no Split', () => {
+    expect(rescaleShares([], 100, 120)).toEqual([])
   })
 })

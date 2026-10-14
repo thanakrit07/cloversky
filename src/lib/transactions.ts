@@ -32,6 +32,8 @@ export interface Transaction {
   receipt_id: string | null
   /** When a statement says the bank posted it; decides a card row's billing cycle (ADR-0019). */
   posted_date: string | null
+  /** The recurring rule this row is an occurrence of — posted by it, or adopted when the rule was made from it. */
+  recurring_rule_id: string | null
 }
 
 export interface TransactionInput {
@@ -79,7 +81,7 @@ export function useTransactions(householdId: string, range: { start: string; end
       const { data, error } = await supabase
         .from('v_transactions')
         .select(
-          'id, household_id, date, kind, category_id, category_kind, description, amount, owner_id, from_account_id, from_card_id, to_account_id, to_card_id, note, confirmed, source, source_key, receipt_id, posted_date',
+          'id, household_id, date, kind, category_id, category_kind, description, amount, owner_id, from_account_id, from_card_id, to_account_id, to_card_id, note, confirmed, source, source_key, receipt_id, posted_date, recurring_rule_id',
         )
         .eq('household_id', householdId)
         .gte('date', range.start)
@@ -132,7 +134,7 @@ export function useUnconfirmedTransactions(householdId: string) {
       const { data, error } = await supabase
         .from('v_transactions')
         .select(
-          'id, household_id, date, kind, category_id, category_kind, description, amount, owner_id, from_account_id, from_card_id, to_account_id, to_card_id, note, confirmed, source, source_key, receipt_id, posted_date',
+          'id, household_id, date, kind, category_id, category_kind, description, amount, owner_id, from_account_id, from_card_id, to_account_id, to_card_id, note, confirmed, source, source_key, receipt_id, posted_date, recurring_rule_id',
         )
         .eq('household_id', householdId)
         .eq('confirmed', false)

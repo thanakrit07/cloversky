@@ -149,6 +149,18 @@ export function applyRatioSplit(split: RatioSplit[], amount: number): ShareRow[]
     .filter((r) => r.share_amount > 0)
 }
 
+// A Split carried over to a new amount: each member keeps the same fraction of
+// the whole, so a custom 70/30 stays 70/30 and a borrow stays the full amount.
+// For a recurring occurrence whose amount was a guess (variable_amount) until
+// the statement said what was actually charged. No rows in, no rows out.
+export function rescaleShares(shares: ShareRow[], fromAmount: number, toAmount: number): ShareRow[] {
+  if (shares.length === 0 || fromAmount <= 0) return []
+  return applyRatioSplit(
+    shares.map((s) => ({ member_id: s.member_id, ratio: s.share_amount / fromAmount })),
+    toAmount,
+  )
+}
+
 // Replaces a transaction's Split with a freshly computed one. A share that
 // is already settled blocks the delete (the guard trigger in 0024) rather
 // than silently rewriting a repayment's basis — that's left exactly as it

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -31,6 +32,7 @@ import {
   useCreateRecurringRule,
   useDeleteRecurringRule,
   useUpdateRecurringRule,
+  type AdoptedOccurrence,
   type RecurringRule,
   type RecurringRuleInput,
 } from '@/lib/recurring'
@@ -61,9 +63,12 @@ interface Props {
   // Set only when opened from Rep/Inst on the transaction form (D9) — what
   // was already typed there, carried over rather than retyped.
   prefill?: EntryPrefill
+  // The saved transaction this rule is being made from: it becomes the rule's
+  // occurrence on its date, and the rule posts only what comes after it.
+  adopts?: AdoptedOccurrence
 }
 
-export function RecurringRuleSheet({ rule, onClose, prefill }: Props) {
+export function RecurringRuleSheet({ rule, onClose, prefill, adopts }: Props) {
   const { householdId, self, members } = useHousehold()
   const { data: categories } = useCategories(householdId)
   const { data: accounts } = useAccounts(householdId)
@@ -93,8 +98,10 @@ export function RecurringRuleSheet({ rule, onClose, prefill }: Props) {
   })
   const [freq, setFreq] = useState<RecurrenceFreq>(rule?.freq ?? 'monthly')
   const [interval, setIntervalValue] = useState(String(rule?.interval ?? 1))
-  const [dayOfMonth, setDayOfMonth] = useState(String(rule?.day_of_month ?? 1))
-  const [monthOfYear, setMonthOfYear] = useState(String(rule?.month_of_year ?? 1))
+  // A prefilled date is when this actually happens, so it is also the day
+  // (and, yearly, the month) it repeats on — not the 1st by default.
+  const [dayOfMonth, setDayOfMonth] = useState(String(rule?.day_of_month ?? (prefill ? Number(prefill.date.slice(8, 10)) : 1)))
+  const [monthOfYear, setMonthOfYear] = useState(String(rule?.month_of_year ?? (prefill ? Number(prefill.date.slice(5, 7)) : 1)))
   const [weekday, setWeekday] = useState(String(rule?.weekday ?? 1))
   const [monthEnd, setMonthEnd] = useState<MonthEndRule>(rule?.month_end ?? 'clamp')
   const [startDate, setStartDate] = useState(rule?.start_date ?? prefill?.date ?? today())
@@ -165,7 +172,8 @@ export function RecurringRuleSheet({ rule, onClose, prefill }: Props) {
     if (rule) {
       await update.mutateAsync({ id: rule.id, input })
     } else {
-      await create.mutateAsync(input)
+      const { linkError } = await create.mutateAsync({ input, adopts })
+      if (linkError) toast.error(`The rule was saved, but the original transaction could not be linked to it: ${linkError}`)
     }
     onClose()
   }
@@ -242,6 +250,13 @@ export function RecurringRuleSheet({ rule, onClose, prefill }: Props) {
         )
       }
     >
+      {adopts && (
+        <p className="rounded-lg border bg-muted/40 p-3 text-xs text-muted-foreground">
+          The transaction you were editing becomes this rule’s occurrence on {dateRowLabel(adopts.date)}. The rule posts only what comes after it, so
+          nothing already in the ledger is added twice.
+        </p>
+      )}
+
       <div className="space-y-1.5">
         <Label htmlFor="rule-name">Name</Label>
         {/* No autoFocus: opening the system keyboard the instant the sheet

@@ -640,8 +640,9 @@ export function TransactionSheet({ open, onOpenChange, transaction, scan }: Prop
             <CalendarDays className="size-3.5" />
             {dateRowLabel(date)}
           </button>
-          {/* A row already saved can still become an installment (it is then replaced by the plan);
-              turning it into a repeating rule is only offered while recording. */}
+          {/* A row already saved can still become an installment (it is then replaced by the plan)
+              or the first occurrence of a repeating rule (it is kept, and the rule posts what follows) —
+              unless it already is one. */}
           {kind !== 'transfer' && (!transaction || transaction.source === 'manual' || transaction.source === 'import') && (
             <div className="relative">
               <button
@@ -655,7 +656,7 @@ export function TransactionSheet({ open, onOpenChange, transaction, scan }: Prop
               </button>
               {repInstOpen && (
                 <div className="absolute left-0 bottom-full z-10 mb-1.5 w-40 space-y-1 rounded-lg border bg-popover p-1.5 shadow-md">
-                  {!transaction && (
+                  {!transaction?.recurring_rule_id && (
                     <button
                       type="button"
                       onClick={() => {
@@ -758,6 +759,7 @@ export function TransactionSheet({ open, onOpenChange, transaction, scan }: Prop
         <RecurringRuleSheet
           rule={null}
           prefill={buildPrefill()}
+          adopts={transaction ? { transactionId: transaction.id, date: transaction.date } : undefined}
           onClose={() => {
             setCreating(null)
             onOpenChange(false)

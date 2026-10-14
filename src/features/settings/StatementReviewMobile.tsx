@@ -442,7 +442,13 @@ function OneAtATime({
             {r.issue}. This line is left out; nothing else is affected.
           </p>
         )}
-        {r.status === 'match' && (
+        {r.status === 'match' && r.matchSource === 'recurring' && (
+          <p className="text-sm text-muted-foreground">
+            The recurring rule “{r.matchLabel}” already posted this one. Confirming links the two; nothing is added twice. It stays as {categoryText(r.categoryId)}
+            {r.matchAmount !== r.amount && <>, and its amount changes from {formatBaht(r.matchAmount ?? 0)} to {formatBaht(r.amount)}</>}.
+          </p>
+        )}
+        {r.status === 'match' && r.matchSource !== 'recurring' && (
           <p className="text-sm text-muted-foreground">
             You already entered this one by hand. Confirming links the two; nothing is added twice. It stays as {categoryText(r.categoryId)}.
           </p>

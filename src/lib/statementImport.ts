@@ -1,13 +1,14 @@
 // Monthly statement import (ADR-0019). Turns the unmasked staged CSV into rows
 // the review screen can show, each with an identity (source_key) so the same
 // line uploaded twice, or two statements whose periods overlap, never inserts
-// twice. Matching against hand-entered rows is only ever a suggestion: the
-// household confirms it on screen.
+// twice. Matching against hand-entered rows, and against the occurrences a
+// recurring rule posted, is only ever a suggestion: the household confirms it
+// on screen.
 import { supabase } from './supabase'
 import { parseAmount, parseDate } from './import/values'
 import type { TransactionKind, Transaction } from './transactions'
 import type { Category } from './categories'
-import { computeShareRows } from './transactionShares'
+import { computeShareRows, rescaleShares } from './transactionShares'
 
 /**
  * The key a description is remembered and looked up by. The same rule as
@@ -42,8 +43,14 @@ export interface StatementRow {
   file: string
   /** CSV's Owner column as written (a member's name, "shared", or blank). */
   ownerHint: string
-  /** For 'match': the hand-entered row the screen suggests this line is. */
+  /** For 'match': the hand-entered row, or recurring occurrence, the screen suggests this line is. */
   matchId: string | null
+  /** For 'match': where that row came from — said differently on screen. */
+  matchSource: 'manual' | 'recurring' | null
+  /** For 'match': the row's amount now; differs from `amount` only for a recurring row awaiting review. */
+  matchAmount: number | null
+  /** For 'match': the row's own label (a recurring occurrence's is its rule's name). */
+  matchLabel: string | null
   /** An installment period the app has no plan for: never imported, the plan posts it. */
   needsPlan: boolean
   /** Which period of how many, for an installment line. */
@@ -54,7 +61,7 @@ export interface StatementContext {
   accounts: { id: string; name: string }[]
   cards: { id: string; name: string }[]
   categories: Pick<Category, 'id' | 'name' | 'kind' | 'archived' | 'system'>[]
-  existing: Pick<Transaction, 'id' | 'date' | 'amount' | 'source' | 'source_key' | 'from_account_id' | 'from_card_id'>[]
+  existing: Pick<Transaction, 'id' | 'date' | 'kind' | 'amount' | 'source' | 'source_key' | 'confirmed' | 'note' | 'from_account_id' | 'from_card_id'>[]
 }
 
 // Staging writes this into Details for an installment line whose plan the app
@@ -146,23 +153,30 @@ export function buildStatementRows(rows: Record<string, string>[], ctx: Statemen
     const sourceKey = `${base}:${n}`
 
     let status: RowStatus = 'new'
-    let matchId: string | null = null
+    let match: StatementContext['existing'][number] | undefined
     if (issues.length) status = 'error'
     else if (existingKeys.has(sourceKey)) status = 'imported'
     else {
-      const candidate = ctx.existing.find(
+      const nearby = ctx.existing.filter(
         (t) =>
-          t.source === 'manual' &&
+          (t.source === 'manual' || t.source === 'recurring') &&
           !t.source_key &&
           !claimed.has(t.id) &&
-          t.amount === amount &&
           (from.cardId ? t.from_card_id === from.cardId : t.from_account_id === from.accountId) &&
           daysBetween(t.date, date!) <= MATCH_WINDOW_DAYS,
       )
-      if (candidate) {
+      // The same amount first. Failing that, a recurring occurrence still
+      // waiting for review: its amount was the rule's guess (a utility bill,
+      // say) and the statement is what was actually charged — nearest amount,
+      // then nearest day, among those of the same kind.
+      match =
+        nearby.find((t) => t.amount === amount) ??
+        nearby
+          .filter((t) => t.source === 'recurring' && !t.confirmed && t.kind === kind)
+          .sort((a, b) => Math.abs(a.amount - amount!) - Math.abs(b.amount - amount!) || daysBetween(a.date, date!) - daysBetween(b.date, date!))[0]
+      if (match) {
         status = 'match'
-        matchId = candidate.id
-        claimed.add(candidate.id)
+        claimed.add(match.id)
       } else if (categoryName === 'Other') status = 'review'
     }
 
@@ -184,7 +198,10 @@ export function buildStatementRows(rows: Record<string, string>[], ctx: Statemen
       counterparty: (raw['Counterparty'] ?? '').trim(),
       file: (raw['File'] ?? '').trim(),
       ownerHint: (raw['Owner'] ?? '').trim(),
-      matchId,
+      matchId: match?.id ?? null,
+      matchSource: match ? (match.source as 'manual' | 'recurring') : null,
+      matchAmount: match?.amount ?? null,
+      matchLabel: match?.note ?? null,
       needsPlan,
       installment,
     }
@@ -257,13 +274,54 @@ export async function applyStatementRows(
     }
   }
   const matches = rows.filter((r) => r.matchId)
+  // A recurring occurrence whose guessed amount the statement corrects takes
+  // its Split along to the new amount. Read every one before writing
+  // anything: a share already settled up can't be rewritten (the guard
+  // trigger in 0024), and finding that halfway through would leave the
+  // import half applied.
+  const resized = matches.filter((r) => r.matchAmount !== null && r.matchAmount !== r.amount)
+  const sharesOf = new Map<string, { member_id: string; share_amount: number }[]>()
+  if (resized.length) {
+    const { data, error } = await supabase
+      .from('transaction_shares')
+      .select('transaction_id, member_id, share_amount, settled_by_transaction_id')
+      .in('transaction_id', resized.map((r) => r.matchId!))
+    if (error) throw error
+    for (const s of data ?? []) {
+      if (s.settled_by_transaction_id) {
+        const r = resized.find((x) => x.matchId === s.transaction_id)!
+        throw new Error(`"${r.matchLabel ?? r.description}" on ${r.date} has already been settled up — undo the repayment, then import again`)
+      }
+      sharesOf.set(s.transaction_id, [...(sharesOf.get(s.transaction_id) ?? []), { member_id: s.member_id, share_amount: Number(s.share_amount) }])
+    }
+  }
   for (const r of matches) {
-    // Keeps the household's category, note and shares; the statement is right about money and dates.
+    // Keeps the household's category, note and Split; the statement is right
+    // about money and dates. A recurring occurrence it confirms has been
+    // reviewed: the statement is the review.
     const { error } = await supabase
       .from('transactions')
-      .update({ source_key: r.sourceKey, amount: r.amount, date: r.date, posted_date: r.postedDate })
+      .update({
+        source_key: r.sourceKey,
+        amount: r.amount,
+        date: r.date,
+        posted_date: r.postedDate,
+        ...(r.matchSource === 'recurring' ? { confirmed: true } : {}),
+      })
       .eq('id', r.matchId!)
     if (error) throw error
+    const shares = sharesOf.get(r.matchId!)
+    if (r.matchAmount !== null && r.matchAmount !== r.amount && shares) {
+      const { error: deleteError } = await supabase.from('transaction_shares').delete().eq('transaction_id', r.matchId!)
+      if (deleteError) throw deleteError
+      const next = rescaleShares(shares, r.matchAmount, r.amount)
+      if (next.length) {
+        const { error: insertError } = await supabase
+          .from('transaction_shares')
+          .insert(next.map((s) => ({ household_id: householdId, transaction_id: r.matchId!, ...s })))
+        if (insertError) throw insertError
+      }
+    }
   }
   return { inserted: inserts.length, matched: matches.length }
 }

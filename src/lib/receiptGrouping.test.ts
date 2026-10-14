@@ -23,6 +23,7 @@ function tx(id: string, amount: number, receiptId: string | null = null): Transa
     source_key: null,
     receipt_id: receiptId,
     posted_date: null,
+    recurring_rule_id: null,
   }
 }
 

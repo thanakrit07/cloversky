@@ -37,6 +37,12 @@ import { WhoIsThis } from './WhoIsThis'
 import { hasPlanNear, periodLineFor, removeSuperseded, useSupersededCandidates, type OrphanConversion, type SupersededCandidate } from '@/lib/superseded'
 
 type Tab = 'review' | 'new' | 'imported'
+function matchLabel(r: StatementRow): string {
+  if (r.matchSource !== 'recurring') return 'Same as a row you entered — confirm'
+  const was = r.matchAmount !== r.amount ? ` (was ${formatBaht(r.matchAmount ?? 0)})` : ''
+  return `Posted by recurring “${r.matchLabel}”${was} — confirm`
+}
+
 const TAB_OF: Record<StatementRow['status'], Tab> = { error: 'review', match: 'review', review: 'review', new: 'new', imported: 'imported' }
 const TAB_LABEL: Record<Tab, string> = { review: 'Needs review', new: 'New', imported: 'Already imported' }
 const PAGE = 100
@@ -625,7 +631,7 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
                     {actionable(r) && (
                       <label className="flex items-center gap-1.5">
                         <Checkbox checked={isAccepted} onCheckedChange={(v) => update([r.line], v === true)} />
-                        {r.status === 'match' ? 'Same as a row you entered — confirm' : r.status === 'review' ? 'Accept (check category)' : 'Accept'}
+                        {r.status === 'match' ? matchLabel(r) : r.status === 'review' ? 'Accept (check category)' : 'Accept'}
                       </label>
                     )}
                   </td>

@@ -31,6 +31,7 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
     source_key: null,
     receipt_id: null,
     posted_date: null,
+    recurring_rule_id: null,
     ...overrides,
   }
 }

@@ -58,14 +58,43 @@ export function useRecurringRules(householdId: string) {
 
 export type RecurringRuleInput = Omit<RecurringRule, 'id' | 'household_id' | 'last_generated_date'>
 
+/**
+ * A transaction already in the ledger that a new rule takes as one of its
+ * own occurrences — typically a statement line, turned into a rule from the
+ * row itself. The rule starts generating only after it, so neither it nor
+ * anything before it is posted a second time.
+ */
+export interface AdoptedOccurrence {
+  transactionId: string
+  date: string
+}
+
 export function useCreateRecurringRule(householdId: string) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (input: RecurringRuleInput) => {
-      const { error } = await supabase.from('recurring_rules').insert({ household_id: householdId, ...input })
+    mutationFn: async ({ input, adopts }: { input: RecurringRuleInput; adopts?: AdoptedOccurrence }) => {
+      const { data, error } = await supabase
+        .from('recurring_rules')
+        // The watermark is what materialiseDue resumes from: set to the
+        // adopted row's date, the past stays the ledger's.
+        .insert({ household_id: householdId, ...input, ...(adopts ? { last_generated_date: adopts.date } : {}) })
+        .select('id')
+        .single()
       if (error) throw error
+      if (adopts) {
+        const { error: linkError } = await supabase
+          .from('transactions')
+          .update({ recurring_rule_id: data.id, occurrence_date: adopts.date })
+          .eq('id', adopts.transactionId)
+        // The rule exists either way; only the link is left to retry by hand.
+        if (linkError) return { linkError: linkError.message }
+      }
+      return { linkError: null }
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['recurring_rules', householdId] }),
+    onSuccess: (_data, { adopts }) => {
+      queryClient.invalidateQueries({ queryKey: ['recurring_rules', householdId] })
+      if (adopts) queryClient.invalidateQueries({ queryKey: ['transactions', householdId] })
+    },
   })
 }
 

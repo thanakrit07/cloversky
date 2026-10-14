@@ -26,6 +26,20 @@ const row = (o: Record<string, string> = {}) => ({
   ...o,
 })
 
+// An existing row: hand-entered on KTC, matching row() unless overridden.
+const txn: StatementContext['existing'][number] = {
+  id: 'x',
+  date: '2026-09-05',
+  kind: 'expense',
+  amount: 120,
+  source: 'manual',
+  source_key: null,
+  confirmed: true,
+  note: null,
+  from_account_id: null,
+  from_card_id: 'card-ktc',
+}
+
 describe('buildStatementRows', () => {
   it('gives the same line the same key, and a second identical line its own', () => {
     const a = buildStatementRows([row(), row()], ctx())
@@ -37,17 +51,51 @@ describe('buildStatementRows', () => {
 
   it('marks a line already in the database as imported, whatever file it came from', () => {
     const [first] = buildStatementRows([row()], ctx())
-    const existing = [{ id: 't1', date: '2026-09-05', amount: 120, source: 'import' as const, source_key: first.sourceKey, from_account_id: null, from_card_id: 'card-ktc' }]
+    const existing = [{ ...txn, id: 't1', source: 'import' as const, source_key: first.sourceKey }]
     expect(buildStatementRows([row()], ctx(existing))[0].status).toBe('imported')
   })
 
   it('suggests a hand-entered row on the same card, same amount, within three days — once', () => {
-    const manual = { id: 'm1', date: '2026-09-03', amount: 120, source: 'manual' as const, source_key: null, from_account_id: null, from_card_id: 'card-ktc' }
+    const manual = { ...txn, id: 'm1', date: '2026-09-03' }
     const rows = buildStatementRows([row(), row()], ctx([manual]))
-    expect(rows[0]).toMatchObject({ status: 'match', matchId: 'm1' })
+    expect(rows[0]).toMatchObject({ status: 'match', matchId: 'm1', matchSource: 'manual' })
     expect(rows[1].status).toBe('new')
     const far = { ...manual, date: '2026-09-01' }
     expect(buildStatementRows([row()], ctx([far]))[0].status).toBe('new')
+  })
+
+  it('suggests the occurrence a recurring rule posted, so the line is not added a second time', () => {
+    const posted = { ...txn, id: 'r1', source: 'recurring' as const, note: 'iCloud', date: '2026-09-04' }
+    expect(buildStatementRows([row()], ctx([posted]))[0]).toMatchObject({
+      status: 'match',
+      matchId: 'r1',
+      matchSource: 'recurring',
+      matchAmount: 120,
+      matchLabel: 'iCloud',
+    })
+  })
+
+  it('matches a recurring occurrence awaiting review whatever its guessed amount, nearest amount first', () => {
+    const far = { ...txn, id: 'r-far', source: 'recurring' as const, confirmed: false, amount: 500 }
+    const near = { ...txn, id: 'r-near', source: 'recurring' as const, confirmed: false, amount: 100 }
+    const [r] = buildStatementRows([row()], ctx([far, near]))
+    expect(r).toMatchObject({ status: 'match', matchId: 'r-near', matchAmount: 100, amount: 120 })
+  })
+
+  it('prefers a row of the same amount over a recurring guess', () => {
+    const guess = { ...txn, id: 'r1', source: 'recurring' as const, confirmed: false, amount: 119 }
+    const exact = { ...txn, id: 'm1' }
+    expect(buildStatementRows([row()], ctx([guess, exact]))[0].matchId).toBe('m1')
+  })
+
+  it('never loosens the amount for a confirmed occurrence, another kind, or a row already linked to a line', () => {
+    const confirmed = { ...txn, id: 'r1', source: 'recurring' as const, amount: 99 }
+    const income = { ...txn, id: 'r2', source: 'recurring' as const, confirmed: false, amount: 99, kind: 'income' as const }
+    const linked = { ...txn, id: 'r3', source: 'recurring' as const, source_key: 'stmt:other' }
+    const imported = { ...txn, id: 'i1', source: 'import' as const }
+    for (const t of [confirmed, income, linked, imported]) {
+      expect(buildStatementRows([row()], ctx([t]))[0].status).toBe('new')
+    }
   })
 
   it('sends "Other" to review, and refuses what it can’t import', () => {
