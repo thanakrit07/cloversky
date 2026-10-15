@@ -748,6 +748,8 @@ Treating either as cash-to-set-aside overstates what the household needs.
 
 0% plans that carry a fee are entered as the equivalent annualised rate in the same field.
 
+**Shipped (2026-10, Upcoming → Debt).** A plan owes its periods dated after today (each period is already a posted row, ADR-0001); a card counts only a closed bill still unpaid past its due date, never `cardOutstanding`, which would count every plan twice. "Left each month" is recurring income − recurring costs − debt due. The simulator is not built yet: the household has no prepayable loan to aim extra money at.
+
 ### 6.5 Dashboard figures
 
 * **Primary card — monthly summary**: income / expense / net for the selected month, split by person. Transfers are excluded from both sides. Answers "what did we spend this month?"

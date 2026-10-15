@@ -15,11 +15,11 @@ import { OwnerSelect } from '@/components/OwnerSelect'
 import { useAccounts, useCreateAccount, useUpdateAccount, type Account, type AccountType } from '@/lib/accounts'
 import { ACCOUNT_ICON } from '@/lib/accountIcons'
 import { adjustmentCategory } from '@/lib/balanceAdjustments'
-import { useCardCycleAdjustments, type CardCycleAdjustment } from '@/lib/cardCycleAdjustments'
+import { useCardCycleAdjustments } from '@/lib/cardCycleAdjustments'
 import { useCards, useCreateCard, useUpdateCard, type Card } from '@/lib/cards'
 import { useCategories, type Category } from '@/lib/categories'
-import { accountBalance, cardOutstanding, setAside, spentThisCycle } from '@/lib/finance/balances'
-import { closedCycleAsOf, cycleBill, cycleOf } from '@/lib/finance/billingCycle'
+import { accountBalance, cardOutstanding, closedBillFor, setAside, spentThisCycle } from '@/lib/finance/balances'
+import { cycleOf } from '@/lib/finance/billingCycle'
 import type { PersonFilter } from '@/lib/filters'
 import { useHousehold } from '@/lib/HouseholdContext'
 import {
@@ -29,7 +29,7 @@ import {
   type InstrumentKind,
 } from '@/lib/instruments'
 import { formatBaht } from '@/lib/format'
-import { useInstallments, usePostedPeriods, type Installment } from '@/lib/installments'
+import { useInstallments, usePostedPeriods } from '@/lib/installments'
 import { ALL_TIME, dayMonthLabel } from '@/lib/month'
 import { useCreateTransaction, useTransactions, useUnconfirmedTransactions, type Transaction } from '@/lib/transactions'
 import { useClearedItems, useSettlements, useUndoRepayment, useUnsettledShares } from '@/lib/transactionShares'
@@ -58,27 +58,6 @@ function lastConfirmedDate(account: Account, transactions: Transaction[]): strin
     if (!latest || t.date > latest) latest = t.date
   }
   return latest
-}
-
-// §6.3c/ADR-0012: a card row leads with its most recently closed Cycle
-// Bill and when it's due, not capacity — this computes that pair the same
-// way CardCycleSummary and CardForecastTab do (same cycleBill call, so the
-// three screens can't disagree). `postedPeriods` and `adjustments` are
-// household-wide; installments get filtered to this card's active plans.
-function closedBillFor(
-  card: Card,
-  transactions: Transaction[],
-  installments: Installment[],
-  postedPeriods: ReadonlySet<string>,
-  adjustments: CardCycleAdjustment[],
-  today: string,
-) {
-  const closed = closedCycleAsOf(card, today)
-  const cardTxns = transactions.filter((t) => t.from_card_id === card.id || t.to_card_id === card.id)
-  const cardInstallments = installments.filter((i) => i.card_id === card.id && i.status === 'active')
-  const adjustment = adjustments.find((a) => a.card_id === card.id && a.cycle_start === closed.start)?.amount ?? null
-  const bill = cycleBill({ cycle: closed, cardId: card.id, transactions: cardTxns, installments: cardInstallments, adjustment, postedPeriods })
-  return { bill, dueDate: closed.dueDate, cardInstallments, adjustment }
 }
 
 // D-0004: debts and their repayment history live here, not on Records —

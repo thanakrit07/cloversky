@@ -129,3 +129,10 @@ export function nextOccurrence(rule: RecurrenceSchedule, from: string): string |
   const horizon = iso(year + 2, month0, Math.min(day, 28))
   return occurrencesBetween(rule, from, horizon)[0] ?? null
 }
+
+// Approximate monthly equivalent, for fixed costs and what's left each month.
+export function monthlyEquivalent(rule: { freq: RecurrenceFreq; interval: number; amount: number }): number {
+  if (rule.freq === 'monthly') return rule.amount / rule.interval
+  if (rule.freq === 'weekly') return (rule.amount * 52) / 12 / rule.interval
+  return rule.amount / 12 / rule.interval
+}

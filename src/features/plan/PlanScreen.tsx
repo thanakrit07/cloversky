@@ -8,13 +8,14 @@ import { useCards } from '@/lib/cards'
 import { useHousehold } from '@/lib/HouseholdContext'
 import { formatBaht } from '@/lib/format'
 import { cycleBill, cycleOf, periodDate } from '@/lib/finance/billingCycle'
-import { nextOccurrence } from '@/lib/finance/recurrence'
+import { monthlyEquivalent, nextOccurrence } from '@/lib/finance/recurrence'
 import { useInstallmentPayments, useInstallments, usePostedPeriods } from '@/lib/installments'
 import { ALL_TIME, dayMonthLabel } from '@/lib/month'
 import { useRecurringRules, useUpdateRecurringRule, type RecurringRule } from '@/lib/recurring'
 import { useTransactions } from '@/lib/transactions'
 import { cn } from '@/lib/utils'
 import { CardForecastTab } from './CardForecastTab'
+import { DebtSection } from './DebtSection'
 import { RecurringRuleSheet } from './RecurringRuleSheet'
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -44,13 +45,6 @@ function scheduleLabel(rule: RecurringRule): string {
     return `${every}${rule.interval > 1 ? 'months' : 'Monthly'} · day ${rule.day_of_month}`
   }
   return `${every}${rule.interval > 1 ? 'years' : 'Yearly'} · ${rule.day_of_month} ${MONTHS[(rule.month_of_year ?? 1) - 1]}`
-}
-
-// Approximate monthly equivalent, for the fixed-costs summary.
-function monthlyEquivalent(rule: RecurringRule): number {
-  if (rule.freq === 'monthly') return rule.amount / rule.interval
-  if (rule.freq === 'weekly') return (rule.amount * 52) / 12 / rule.interval
-  return rule.amount / 12 / rule.interval
 }
 
 interface TimelineRow {
@@ -362,6 +356,10 @@ export function PlanScreen() {
       <section className="space-y-2">
         <h2 className="px-1 text-sm font-medium">Coming up</h2>
         <ComingUpSection rows={rows} onEditRecurring={setEditingRule} />
+      </section>
+
+      <section>
+        <DebtSection />
       </section>
 
       <section>
