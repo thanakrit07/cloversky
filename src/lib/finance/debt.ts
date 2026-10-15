@@ -113,6 +113,32 @@ export function payoffByMonth(plans: PlanLike[], carried: CarriedCard[], today: 
   return months
 }
 
+export interface PlanEnding {
+  /** yyyy-MM of the last payment. */
+  month: string
+  /** The first month without it. */
+  after: string
+  ending: string[]
+  /** Debt due from `after` on. */
+  dueAfter: number
+  /** What this ending frees each month, against the step before it (the first against `dueNow`). */
+  freed: number
+}
+
+/** The months plans end, read as steps down from `dueNow`. */
+export function endings(months: DebtMonth[], dueNow: number): PlanEnding[] {
+  let before = dueNow
+  return months
+    .filter((m) => m.ending.length)
+    .map((m) => {
+      const after = nextMonth(m.month)
+      const dueAfter = months.find((x) => x.month === after)?.due ?? 0
+      const freed = before - dueAfter
+      before = dueAfter
+      return { month: m.month, after, ending: m.ending, dueAfter, freed }
+    })
+}
+
 function nextMonth(m: string): string {
   const [y, mo] = m.split('-').map(Number)
   return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`
