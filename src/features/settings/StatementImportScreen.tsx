@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { CategoryOptions } from '@/components/CategoryOptions'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useAccounts } from '@/lib/accounts'
 import { useCards } from '@/lib/cards'
@@ -27,8 +28,10 @@ import {
   type NewStatementFile,
 } from '@/lib/statementMemory'
 import { useTransactions } from '@/lib/transactions'
-import { cn } from '@/lib/utils'
 import { StatementPdfSource, type StatementWarning } from './StatementPdfSource'
+import { useIsDesktop } from '@/hooks/useIsDesktop'
+import { StatementReviewDesktop } from './StatementReviewDesktop'
+import { StatementReviewList } from './StatementReviewList'
 import { UnknownNames } from './UnknownNames'
 import { WhoIsThis } from './WhoIsThis'
 import { hasPlanNear, periodLineFor, removeSuperseded, useSupersededCandidates, type OrphanConversion, type SupersededCandidate } from '@/lib/superseded'
@@ -37,6 +40,11 @@ type Tab = 'review' | 'new' | 'imported'
 const TAB_OF: Record<StatementRow['status'], Tab> = { error: 'review', match: 'review', review: 'review', new: 'new', imported: 'imported' }
 const TAB_LABEL: Record<Tab, string> = { review: 'Needs review', new: 'New', imported: 'Already imported' }
 const PAGE = 100
+const EMPTY_TEXT: Record<Tab, string> = {
+  review: 'Nothing needs a second look. The rest is under New.',
+  new: 'No new lines. Everything here is either imported already or under Needs review.',
+  imported: 'None of these lines are in your records yet.',
+}
 
 // Work in progress survives a reload but not the browser tab: sessionStorage,
 // never localStorage — this is the unmasked statement.
@@ -114,8 +122,9 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
       // storage full or blocked: the screen still works, it just won't survive a reload
     }
   }, [csvRows, accepted, categoryOverride, whoOverride, warnings, fileMeta, orphans, supersede])
-  const [selected, setSelected] = useState<Set<number>>(new Set())
   const [applying, setApplying] = useState(false)
+  const [confirmStartOver, setConfirmStartOver] = useState(false)
+  const isDesktop = useIsDesktop()
   // The installment plan being made from this review, and the expense it replaces.
   const [planFrom, setPlanFrom] = useState<{ prefill: EntryPrefill; supersedes?: string } | null>(null)
 
@@ -278,7 +287,14 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   function setCategory(lines: number[], categoryId: string) {
     setCategoryOverride((prev) => new Map([...prev, ...lines.map((l) => [l, categoryId] as const)]))
   }
-  const selectedLines = visible.filter((r) => selected.has(r.line) && actionable(r)).map((r) => r.line)
+  // One tick per row means "import this"; Set who / Set category act on the ticked rows in view.
+  const tickedLines = visible.filter((r) => accepted.has(r.line) && actionable(r)).map((r) => r.line)
+  const actionableLines = visible.filter(actionable).map((r) => r.line)
+  const editable = (r: StatementRow) => actionable(r) && r.kind !== 'transfer' && r.status !== 'match'
+  const unknownName = (r: StatementRow) =>
+    r.counterparty && actionable(r) && !rules.has(normalizeStatementText(r.counterparty)) ? r.counterparty : null
+  const onPlan = (r: StatementRow) => setPlanFrom({ prefill: prefillFromLine(r) })
+  const onWho = (line: number, who: string) => setWhoOverride((prev) => new Map(prev).set(line, who))
 
   async function apply() {
     setApplying(true)
@@ -306,15 +322,11 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
     }
   }
 
-  // Desktop pins everything above the table and scrolls the table alone. A
-  // phone hasn't the height for that: the file list, warnings and wrapped
-  // toolbars can fill the screen and leave the table no room at all, so there
-  // the whole page scrolls instead.
-  return (
-    <div className="flex min-h-full flex-col lg:h-full">
+  const notices = (
+    <>
       {fileMeta.length > 0 && (
-        <div className="border-b p-2 text-xs">
-          <span className="font-medium">Reviewing {fileMeta.length === 1 ? '1 file' : `${fileMeta.length} files`}:</span>
+        <details className="border-b p-2 text-xs">
+          <summary className="cursor-pointer font-medium">Reviewing {fileMeta.length === 1 ? '1 file' : `${fileMeta.length} files`}</summary>
           <ul className="mt-1 space-y-0.5 text-muted-foreground">
             {fileMeta.map((f) => (
               <li key={f.sha256} className="flex flex-wrap gap-x-2">
@@ -325,10 +337,10 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
               </li>
             ))}
           </ul>
-        </div>
+        </details>
       )}
       {warnings.length > 0 && (
-        <details className="border-b border-destructive/40 bg-destructive/5 p-2 text-xs" open>
+        <details className="border-b border-destructive/40 bg-destructive/5 p-2 text-xs">
           <summary className="cursor-pointer font-medium text-destructive">
             {warnings.length} {warnings.length === 1 ? 'line was' : 'lines were'} not imported: they could not be read or placed
           </summary>
@@ -393,37 +405,42 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
           onAnswer={() => setAsking(unknown.filter((n) => pickedNames.has(n.key)).map((n) => n.name))}
         />
       )}
-      {asking && (
-        <WhoIsThis
-          names={asking}
-          accounts={accounts ?? []}
-          cards={cards ?? []}
-          members={members}
-          categories={liveCategories}
-          saving={saveCounterparties.isPending}
-          onCancel={() => setAsking(null)}
-          onSave={async (answer) => {
-            try {
-              await saveCounterparties.mutateAsync({ names: asking, answer })
-              setPickedNames(new Set())
-              setAsking(null)
-            } catch (e) {
-              toast.error(e instanceof Error ? e.message : 'Could not save')
-            }
-          }}
-        />
-      )}
-      <div className="flex flex-wrap items-center gap-2 border-b p-2">
-        {(['review', 'new', 'imported'] as Tab[]).map((t) => (
-          <Button key={t} size="sm" variant={tab === t ? 'default' : 'ghost'} onClick={() => { setTab(t); setSelected(new Set()); setShown(PAGE) }}>
-            {TAB_LABEL[t]} ({rows.filter((r) => TAB_OF[r.status] === t).length})
-          </Button>
-        ))}
-        <div className="ml-auto flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
+    </>
+  )
+  const supersededCount = (supersededFound ?? []).filter((f) => f.candidates.length > 0).length
+  const noticeCount = (warnings.length ? 1 : 0) + supersededCount + (unknown.length ? 1 : 0)
+
+  const askForm = asking && (
+    <WhoIsThis
+      names={asking}
+      accounts={accounts ?? []}
+      cards={cards ?? []}
+      members={members}
+      categories={liveCategories}
+      saving={saveCounterparties.isPending}
+      onCancel={() => setAsking(null)}
+      onSave={async (answer) => {
+        try {
+          await saveCounterparties.mutateAsync({ names: asking, answer })
+          setPickedNames(new Set())
+          setAsking(null)
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : 'Could not save')
+        }
+      }}
+    />
+  )
+  const instrumentLabel = (r: StatementRow) =>
+    instrumentName(r.fromAccountId, r.fromCardId) + (r.kind === 'transfer' ? ` → ${instrumentName(r.toAccountId, r.toCardId)}` : '')
+  const dialogs = (
+    <>
+        {confirmStartOver && (
+          <ConfirmDialog
+            title="Start over?"
+            description="This review is thrown away, with everything you accepted or changed in it. Nothing has been imported yet."
+            confirmLabel="Start over"
+            onClose={() => setConfirmStartOver(false)}
+            onConfirm={() => {
               clearDraft()
               setCsvRows(null)
               setWarnings([])
@@ -434,33 +451,94 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
               setCategoryOverride(new Map())
               setWhoOverride(new Map())
             }}
-          >
-            Start over
+          />
+        )}
+        {planFrom && (
+          <InstallmentSheet
+            installment={null}
+            prefill={planFrom.prefill}
+            supersedes={planFrom.supersedes}
+            onClose={() => {
+              setPlanFrom(null)
+              void queryClient.invalidateQueries({ queryKey: ['superseded', householdId] })
+            }}
+          />
+        )}
+    </>
+  )
+
+  if (isDesktop) {
+    return (
+      <div className="h-full">
+        <StatementReviewDesktop
+          rows={rows.map(effective)}
+          accepted={accepted}
+          onAccept={update}
+          actionable={actionable}
+          editable={editable}
+          instrumentName={instrumentLabel}
+          showFile={showFile}
+          categories={liveCategories}
+          categoryById={categoryById}
+          members={members}
+          whoOf={whoOf}
+          onWho={(lines, who) => setWhoOverride((prev) => new Map([...prev, ...lines.map((l) => [l, who] as const)]))}
+          onCategory={setCategory}
+          unknownName={unknownName}
+          onAsk={(name) => setAsking([name])}
+          onPlan={onPlan}
+          notices={notices}
+          noticeCount={noticeCount}
+          askForm={askForm}
+          fileCount={fileMeta.length}
+          toApply={toApply}
+          applying={applying}
+          onApply={apply}
+          onStartOver={() => setConfirmStartOver(true)}
+        />
+        {dialogs}
+      </div>
+    )
+  }
+
+  // A phone scrolls the whole page: the file list, warnings and wrapped
+  // toolbars can fill the screen and leave the list no room of its own.
+  return (
+    <div className="flex min-h-full flex-col">
+      {notices}
+      {askForm}
+      <div className="flex flex-wrap items-center gap-2 border-b p-2">
+        {(['review', 'new', 'imported'] as Tab[]).map((t) => (
+          <Button key={t} size="sm" variant={tab === t ? 'default' : 'ghost'} onClick={() => { setTab(t); setShown(PAGE) }}>
+            {TAB_LABEL[t]} ({rows.filter((r) => TAB_OF[r.status] === t).length})
           </Button>
-          <span className="text-xs text-muted-foreground">{toApply.length} to apply</span>
-          <Button size="sm" disabled={!toApply.length || applying} onClick={apply}>
-            {applying ? 'Applying…' : 'Apply'}
+        ))}
+        <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setConfirmStartOver(true)}>
+            Start over
           </Button>
         </div>
       </div>
 
       {tab !== 'imported' && (
         <div className="flex flex-wrap items-center gap-2 border-b p-2 text-xs">
-          {tab === 'new' && (
-            <Button size="sm" variant="outline" onClick={() => update(visible.filter(actionable).map((r) => r.line), true)}>
-              Accept all
+          {tickedLines.length < actionableLines.length ? (
+            <Button size="sm" variant="outline" onClick={() => update(actionableLines, true)}>
+              Tick all
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => update(actionableLines, false)}>
+              Untick all
             </Button>
           )}
-          <span className="text-muted-foreground">{selectedLines.length} selected:</span>
-          <Button size="sm" variant="outline" disabled={!selectedLines.length} onClick={() => update(selectedLines, true)}>Accept</Button>
-          <Button size="sm" variant="outline" disabled={!selectedLines.length} onClick={() => update(selectedLines, false)}>Skip</Button>
+          <span className="text-muted-foreground">{tickedLines.length} ticked:</span>
           <select
             className="h-8 rounded-md border bg-background px-2"
-            disabled={!selectedLines.length}
+            disabled={!tickedLines.length}
             value=""
             onChange={(e) =>
               e.target.value &&
-              setWhoOverride((prev) => new Map([...prev, ...selectedLines.map((l) => [l, e.target.value] as const)]))
+              setWhoOverride((prev) => new Map([...prev, ...tickedLines.map((l) => [l, e.target.value] as const)]))
             }
           >
             <option value="">Set who…</option>
@@ -471,9 +549,9 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
           </select>
           <select
             className="h-8 rounded-md border bg-background px-2"
-            disabled={!selectedLines.length}
+            disabled={!tickedLines.length}
             value=""
-            onChange={(e) => e.target.value && setCategory(selectedLines, e.target.value)}
+            onChange={(e) => e.target.value && setCategory(tickedLines, e.target.value)}
           >
             <option value="">Set category…</option>
             <CategoryOptions categories={liveCategories} />
@@ -481,133 +559,44 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
         </div>
       )}
 
-      <div className="overflow-x-auto lg:flex-1 lg:overflow-auto">
-        <table className="w-full text-xs">
-          <thead className="sticky top-0 bg-background text-left text-muted-foreground">
-            <tr>
-              <th className="p-2">
-                <Checkbox
-                  checked={visible.length > 0 && visible.every((r) => selected.has(r.line))}
-                  onCheckedChange={(v) => setSelected(v ? new Set(visible.map((r) => r.line)) : new Set())}
-                  aria-label="Select all"
-                />
-              </th>
-              <th className="p-2">Date</th>
-              <th className="p-2">Account</th>
-              {showFile && <th className="p-2">File</th>}
-              <th className="p-2">Description</th>
-              <th className="p-2 text-right">Amount</th>
-              <th className="p-2">Category</th>
-              <th className="p-2">Responsible</th>
-              <th className="p-2">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.slice(0, shown).map((raw) => {
-              const r = effective(raw)
-              const isAccepted = accepted.has(r.line) && actionable(r)
-              return (
-                <tr key={r.line} className={cn('border-t', isAccepted && 'bg-primary/5')}>
-                  <td className="p-2">
-                    <Checkbox
-                      checked={selected.has(r.line)}
-                      onCheckedChange={(v) =>
-                        setSelected((prev) => {
-                          const next = new Set(prev)
-                          if (v) next.add(r.line)
-                          else next.delete(r.line)
-                          return next
-                        })
-                      }
-                      aria-label={`Select line ${r.line}`}
-                    />
-                  </td>
-                  <td className="whitespace-nowrap p-2">{r.date}</td>
-                  <td className="whitespace-nowrap p-2">
-                    {instrumentName(r.fromAccountId, r.fromCardId)}
-                    {r.kind === 'transfer' && ` → ${instrumentName(r.toAccountId, r.toCardId)}`}
-                  </td>
-                  {showFile && <td className="max-w-40 truncate p-2 text-muted-foreground" title={r.file}>{r.file}</td>}
-                  <td className="max-w-64 p-2">
-                    <div className="truncate" title={r.description}>{r.description}</div>
-                    {r.counterparty && actionable(r) && !rules.has(normalizeStatementText(r.counterparty)) && (
-                      <button className="text-primary underline underline-offset-2" onClick={() => setAsking([r.counterparty])}>
-                        Who is {r.counterparty}?
-                      </button>
-                    )}
-                  </td>
-                  <td className={cn('whitespace-nowrap p-2 text-right tabular-nums', r.kind === 'income' && 'text-good')}>
-                    {formatBaht(r.amount)}
-                  </td>
-                  <td className="p-2">
-                    {r.kind === 'transfer' || r.status === 'match' || !actionable(r) ? (
-                      categoryById.get(r.categoryId ?? '')?.name ?? '—'
-                    ) : (
-                      <select
-                        className="h-7 rounded border bg-background px-1"
-                        value={r.categoryId ?? ''}
-                        onChange={(e) => setCategory([r.line], e.target.value)}
-                      >
-                        <CategoryOptions categories={liveCategories} kind={r.kind as 'income' | 'expense'} />
-                      </select>
-                    )}
-                  </td>
-                  <td className="p-2">
-                    {r.kind === 'transfer' || r.status === 'match' || !actionable(r) ? (
-                      '—'
-                    ) : (
-                      <select
-                        className="h-7 rounded border bg-background px-1"
-                        value={whoOf(r)}
-                        onChange={(e) => setWhoOverride((prev) => new Map(prev).set(r.line, e.target.value))}
-                      >
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>{m.display_name}</option>
-                        ))}
-                        {r.kind === 'expense' && members.length > 1 && <option value={SHARED}>Shared (split evenly)</option>}
-                      </select>
-                    )}
-                  </td>
-                  <td className="p-2">
-                    {r.status === 'error' && <span className="text-destructive">{r.issue}</span>}
-                    {r.needsPlan && r.installment && (
-                      <Button size="sm" variant="outline" className="mt-1 block" onClick={() => setPlanFrom({ prefill: prefillFromLine(r) })}>
-                        Create plan
-                      </Button>
-                    )}
-                    {r.status === 'imported' && <span className="text-muted-foreground">Already imported</span>}
-                    {actionable(r) && (
-                      <label className="flex items-center gap-1.5">
-                        <Checkbox checked={isAccepted} onCheckedChange={(v) => update([r.line], v === true)} />
-                        {r.status === 'match' ? 'Same as a row you entered — confirm' : r.status === 'review' ? 'Accept (check category)' : 'Accept'}
-                      </label>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-        {!visible.length && <p className="p-4 text-sm text-muted-foreground">Nothing here.</p>}
-        {visible.length > shown && (
-          <div className="p-3 text-center">
-            <Button size="sm" variant="outline" onClick={() => setShown((n) => n + PAGE)}>
-              Show {Math.min(PAGE, visible.length - shown)} more ({visible.length - shown} left)
-            </Button>
-          </div>
-        )}
-      </div>
-      {planFrom && (
-        <InstallmentSheet
-          installment={null}
-          prefill={planFrom.prefill}
-          supersedes={planFrom.supersedes}
-          onClose={() => {
-            setPlanFrom(null)
-            void queryClient.invalidateQueries({ queryKey: ['superseded', householdId] })
-          }}
+      <div className="flex-1">
+        <StatementReviewList
+          rows={visible.slice(0, shown).map(effective)}
+          accepted={accepted}
+          onAccept={update}
+          actionable={actionable}
+          editable={editable}
+          instrumentName={instrumentLabel}
+          categories={liveCategories}
+          categoryById={categoryById}
+          members={members}
+          whoOf={whoOf}
+          onWho={onWho}
+          onCategory={(line, id) => setCategory([line], id)}
+          unknownName={unknownName}
+          onAsk={(name) => setAsking([name])}
+          onPlan={onPlan}
         />
+      </div>
+
+      {!visible.length && <p className="p-4 text-sm text-muted-foreground">{EMPTY_TEXT[tab]}</p>}
+      {visible.length > shown && (
+        <div className="p-3 text-center">
+          <Button size="sm" variant="outline" onClick={() => setShown((n) => n + PAGE)}>
+            Show {Math.min(PAGE, visible.length - shown)} more ({visible.length - shown} left)
+          </Button>
+        </div>
       )}
+      {/* On a phone Apply sits under the thumb, not in the toolbar at the top of a long list. */}
+      <div className="sticky bottom-0 flex items-center gap-3 border-t bg-background px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
+        <span className="flex-1 text-sm text-muted-foreground">
+          {toApply.length ? `${toApply.length} ${toApply.length === 1 ? 'line' : 'lines'} to import` : 'Tick the lines to import'}
+        </span>
+        <Button disabled={!toApply.length || applying} onClick={apply}>
+          {applying ? 'Applying…' : 'Apply'}
+        </Button>
+      </div>
+      {dialogs}
     </div>
   )
 }
