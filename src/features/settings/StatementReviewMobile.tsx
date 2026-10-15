@@ -24,6 +24,8 @@ interface Props {
   /** The row's counterparty, when the household hasn't said who it is yet. */
   unknownName: (r: StatementRow) => string | null
   onAsk: (name: string) => void
+  /** Opens the installment form for a period line the app has no plan for. */
+  onPlan: (r: StatementRow) => void
   /** Files read, lines not read, purchases that became installments, names to answer: the summary shows them first. */
   notices: ReactNode
   toApply: StatementRow[]
@@ -176,7 +178,8 @@ function Summary({ rows, accepted, onAccept, notices, onStartOver, categories, o
               {[
                 review.filter((r) => r.status === 'review').length && count(review.filter((r) => r.status === 'review').length, 'category to check', 'categories to check'),
                 review.filter((r) => r.status === 'match').length && count(review.filter((r) => r.status === 'match').length, 'match to confirm', 'matches to confirm'),
-                review.filter((r) => r.status === 'error').length && `${count(review.filter((r) => r.status === 'error').length, 'line')} that can't be imported`,
+                review.filter((r) => r.needsPlan).length && count(review.filter((r) => r.needsPlan).length, 'installment to plan', 'installments to plan'),
+                review.filter((r) => r.status === 'error' && !r.needsPlan).length && `${count(review.filter((r) => r.status === 'error' && !r.needsPlan).length, 'line')} that can't be imported`,
               ]
                 .filter(Boolean)
                 .join(' · ')}
@@ -378,6 +381,7 @@ function OneAtATime({
   onWho,
   unknownName,
   onAsk,
+  onPlan,
   categoryText,
   instrumentText,
 }: Props & Helpers & { queue: number[]; onDone: () => void }) {
@@ -437,11 +441,20 @@ function OneAtATime({
         </div>
         <Amount r={r} className="block text-3xl font-semibold" />
 
-        {r.status === 'error' && (
+        {r.needsPlan && r.installment ? (
+          <div className="space-y-2 rounded-md bg-warning p-3 text-sm text-warning-foreground">
+            <p>
+              Period {r.installment.k} of {r.installment.total} of an installment the app has no plan for. Make the plan and it posts every period itself.
+            </p>
+            <Button variant="outline" className="w-full bg-background" onClick={() => onPlan(r)}>
+              Create plan
+            </Button>
+          </div>
+        ) : r.status === 'error' ? (
           <p className="text-sm text-destructive">
             {r.issue}. This line is left out; nothing else is affected.
           </p>
-        )}
+        ) : null}
         {r.status === 'match' && (
           <p className="text-sm text-muted-foreground">
             You already entered this one by hand. Confirming links the two; nothing is added twice. It stays as {categoryText(r.categoryId)}.
