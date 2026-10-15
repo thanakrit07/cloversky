@@ -499,6 +499,7 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
           instrumentName={instrumentName}
           unknownName={unknownName}
           onAsk={(name) => setAsking([name])}
+          onPlan={onPlan}
           notices={notices}
           toApply={toApply}
           applying={applying}
