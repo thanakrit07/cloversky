@@ -1,5 +1,9 @@
 # Balances rows answer what is due next, not what is left to spend
 
+> **Amended by [ADR-0023](./0023-balances-leads-with-cash-after-card-spending.md)** (2026-10): owed/left
+> move off the row into tap-to-expand details, worded as credit used, available
+> credit and credit limit. The row still leads with the closed bill and its due date.
+
 [CONTEXT.md](../../CONTEXT.md) opens by naming the three questions this app exists
 to answer. The second — *how much cash to set aside before each credit card's
 bill is due* — had no home on any screen. Balances is the "right now" tab

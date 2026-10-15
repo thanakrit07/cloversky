@@ -3,7 +3,7 @@
 // separate from billingCycle.ts because the two figures deliberately use
 // different time windows — see the account/card asymmetry below.
 
-import { addDays, closedCycleAsOf, cycleBill, type InstallmentLike } from './billingCycle.ts'
+import { addDays, closedCycleAsOf, cycleBill, cycleOf, type InstallmentLike } from './billingCycle.ts'
 
 export interface AccountLike {
   id: string
@@ -162,6 +162,46 @@ export function setAside(
   adjustment: number | null,
   today: string,
 ): number {
+  const { bill, paid } = closedBillAndPaid(card, transactions, installments, postedPeriods, adjustment, today)
+  return Math.max(0, bill - paid)
+}
+
+// ADR-0023: what a card has charged in its still-open cycle up to today —
+// spending that has already happened but is on no bill yet, so Set Aside
+// can't see it. Together they are every baht of card spending the cash in
+// the accounts still has to cover, without the future installment periods
+// cardOutstanding carries (ADR-0001). A payment larger than the closed bill
+// is read as paying this cycle down early.
+export function spentThisCycle(
+  card: CardLike,
+  transactions: TransactionLike[],
+  installments: InstallmentLike[],
+  postedPeriods: ReadonlySet<string>,
+  closedAdjustment: number | null,
+  openAdjustment: number | null,
+  today: string,
+): number {
+  const { bill, paid } = closedBillAndPaid(card, transactions, installments, postedPeriods, closedAdjustment, today)
+  const cardTxns = transactions.filter((t) => (t.from_card_id === card.id || t.to_card_id === card.id) && t.date <= today)
+  const charged = cycleBill({
+    cycle: cycleOf(card, today),
+    cardId: card.id,
+    transactions: cardTxns,
+    installments,
+    adjustment: openAdjustment,
+    postedPeriods,
+  })
+  return Math.max(0, charged - Math.max(0, paid - bill))
+}
+
+function closedBillAndPaid(
+  card: CardLike,
+  transactions: TransactionLike[],
+  installments: InstallmentLike[],
+  postedPeriods: ReadonlySet<string>,
+  adjustment: number | null,
+  today: string,
+): { bill: number; paid: number } {
   const closed = closedCycleAsOf(card, today)
   const cardTxns = transactions.filter((t) => t.from_card_id === card.id || t.to_card_id === card.id)
   const bill = cycleBill({ cycle: closed, cardId: card.id, transactions: cardTxns, installments, adjustment, postedPeriods })
@@ -169,7 +209,7 @@ export function setAside(
     .filter((t) => t.confirmed && t.kind === 'transfer' && t.to_card_id === card.id)
     .filter((t) => t.date > closed.end && t.date <= today)
     .reduce((sum, t) => sum + t.amount, 0)
-  return Math.max(0, bill - paid)
+  return { bill, paid }
 }
 
 // D19: money − card debt + what others owe this member − what this member

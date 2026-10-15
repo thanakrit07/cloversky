@@ -8,6 +8,7 @@ import {
   memberNetWorth,
   newestAnchor,
   setAside,
+  spentThisCycle,
 } from './balances'
 
 const A = 'member-a'
@@ -261,6 +262,32 @@ describe('setAside', () => {
       txn({ kind: 'transfer', amount: 1000, to_card_id: 'card-1', date: '2026-01-08', confirmed: false }),
     ]
     expect(setAside(c, txns, [], new Set(), null, today)).toBe(1000)
+  })
+})
+
+describe('spentThisCycle', () => {
+  // Same card and dates as setAside above: cycle B is open on `today`.
+  const c = card()
+  const today = '2026-01-10'
+  const closedCharge = txn({ kind: 'expense', amount: 1000, from_card_id: 'card-1', date: '2025-12-10' })
+
+  it('counts the open cycle\'s charges up to today, not the closed bill', () => {
+    const txns = [closedCharge, txn({ kind: 'expense', amount: 500, from_card_id: 'card-1', date: '2026-01-07' })]
+    expect(spentThisCycle(c, txns, [], new Set(), null, null, today)).toBe(500)
+  })
+
+  it('leaves out charges dated after today', () => {
+    const txns = [closedCharge, txn({ kind: 'expense', amount: 500, from_card_id: 'card-1', date: '2026-01-20' })]
+    expect(spentThisCycle(c, txns, [], new Set(), null, null, today)).toBe(0)
+  })
+
+  it('takes a payment beyond the closed bill off this cycle', () => {
+    const txns = [
+      closedCharge,
+      txn({ kind: 'expense', amount: 500, from_card_id: 'card-1', date: '2026-01-07' }),
+      txn({ kind: 'transfer', amount: 1300, to_card_id: 'card-1', date: '2026-01-08' }),
+    ]
+    expect(spentThisCycle(c, txns, [], new Set(), null, null, today)).toBe(200)
   })
 })
 

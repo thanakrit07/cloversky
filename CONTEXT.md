@@ -201,3 +201,10 @@ card's most recently closed Cycle Bill, less whatever has been paid toward it.
 A Cycle still open is never counted — nothing about it is due yet — so a card
 whose last bill is settled contributes nothing.
 _Avoid_: amount due, upcoming, cash needed
+
+**Cash After Card Spending**:
+The cash in the household's accounts once every baht already spent on a card is
+paid: Set Aside, plus what each card has charged in its still-open Cycle up to
+today. Future installment periods are not in it — they are not spending yet —
+so it is what is genuinely free right now, and Balances leads with it.
+_Avoid_: spendable, free cash, net worth

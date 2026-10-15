@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { CategoryOptions } from '@/components/CategoryOptions'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Drawer, DrawerContent, DrawerTitle } from '@/components/ui/drawer'
+import { useIsDesktop } from '@/hooks/useIsDesktop'
 import { useAccounts } from '@/lib/accounts'
 import { useCards } from '@/lib/cards'
 import { useCategories } from '@/lib/categories'
@@ -29,22 +30,11 @@ import {
 } from '@/lib/statementMemory'
 import { useTransactions } from '@/lib/transactions'
 import { StatementPdfSource, type StatementWarning } from './StatementPdfSource'
-import { useIsDesktop } from '@/hooks/useIsDesktop'
 import { StatementReviewDesktop } from './StatementReviewDesktop'
-import { StatementReviewList } from './StatementReviewList'
+import { StatementReviewMobile } from './StatementReviewMobile'
 import { UnknownNames } from './UnknownNames'
 import { WhoIsThis } from './WhoIsThis'
 import { hasPlanNear, periodLineFor, removeSuperseded, useSupersededCandidates, type OrphanConversion, type SupersededCandidate } from '@/lib/superseded'
-
-type Tab = 'review' | 'new' | 'imported'
-const TAB_OF: Record<StatementRow['status'], Tab> = { error: 'review', match: 'review', review: 'review', new: 'new', imported: 'imported' }
-const TAB_LABEL: Record<Tab, string> = { review: 'Needs review', new: 'New', imported: 'Already imported' }
-const PAGE = 100
-const EMPTY_TEXT: Record<Tab, string> = {
-  review: 'Nothing needs a second look. The rest is under New.',
-  new: 'No new lines. Everything here is either imported already or under Needs review.',
-  imported: 'None of these lines are in your records yet.',
-}
 
 // Work in progress survives a reload but not the browser tab: sessionStorage,
 // never localStorage — this is the unmasked statement.
@@ -79,6 +69,7 @@ function clearDraft() {
 // only on Apply. Nothing is accepted by default — "Accept all" is one tap.
 export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   const { householdId, self, members } = useHousehold()
+  const isDesktop = useIsDesktop()
   const queryClient = useQueryClient()
   const { data: accounts } = useAccounts(householdId)
   const { data: cards } = useCards(householdId)
@@ -99,11 +90,9 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   })
   const { data: supersededFound } = useSupersededCandidates(householdId, orphans, idsOf)
   const [csvRows, setCsvRows] = useState<Record<string, string>[] | null>(draft?.csvRows ?? null)
-  const [tab, setTab] = useState<Tab>('review')
   const [accepted, setAccepted] = useState<Set<number>>(new Set(draft?.accepted))
   const [categoryOverride, setCategoryOverride] = useState<Map<number, string>>(new Map(draft?.categoryOverride))
   const [whoOverride, setWhoOverride] = useState<Map<number, string>>(new Map(draft?.whoOverride))
-  const [shown, setShown] = useState(PAGE)
   // Lines the reader could not read, and rows it could not place: shown, never dropped quietly.
   const [warnings, setWarnings] = useState<StatementWarning[]>(draft?.warnings ?? [])
   // The files this review was built from, recorded when Apply succeeds.
@@ -124,7 +113,6 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   }, [csvRows, accepted, categoryOverride, whoOverride, warnings, fileMeta, orphans, supersede])
   const [applying, setApplying] = useState(false)
   const [confirmStartOver, setConfirmStartOver] = useState(false)
-  const isDesktop = useIsDesktop()
   // The installment plan being made from this review, and the expense it replaces.
   const [planFrom, setPlanFrom] = useState<{ prefill: EntryPrefill; supersedes?: string } | null>(null)
 
@@ -266,7 +254,6 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   // A file column only helps when there is more than one file to tell apart.
   const showFile = new Set(rows.map((r) => r.file).filter(Boolean)).size > 1
   const unknown = unknownNames(rows, rules)
-  const visible = rows.filter((r) => TAB_OF[r.status] === tab)
   const actionable = (r: StatementRow) => r.status !== 'error' && r.status !== 'imported'
   const effective = (r: StatementRow): StatementRow => {
     const categoryId = categoryOverride.get(r.line)
@@ -287,14 +274,10 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   function setCategory(lines: number[], categoryId: string) {
     setCategoryOverride((prev) => new Map([...prev, ...lines.map((l) => [l, categoryId] as const)]))
   }
-  // One tick per row means "import this"; Set who / Set category act on the ticked rows in view.
-  const tickedLines = visible.filter((r) => accepted.has(r.line) && actionable(r)).map((r) => r.line)
-  const actionableLines = visible.filter(actionable).map((r) => r.line)
   const editable = (r: StatementRow) => actionable(r) && r.kind !== 'transfer' && r.status !== 'match'
   const unknownName = (r: StatementRow) =>
     r.counterparty && actionable(r) && !rules.has(normalizeStatementText(r.counterparty)) ? r.counterparty : null
   const onPlan = (r: StatementRow) => setPlanFrom({ prefill: prefillFromLine(r) })
-  const onWho = (line: number, who: string) => setWhoOverride((prev) => new Map(prev).set(line, who))
 
   async function apply() {
     setApplying(true)
@@ -501,102 +484,35 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
     )
   }
 
-  // A phone scrolls the whole page: the file list, warnings and wrapped
-  // toolbars can fill the screen and leave the list no room of its own.
-  return (
-    <div className="flex min-h-full flex-col">
-      {notices}
-      {askForm}
-      <div className="flex flex-wrap items-center gap-2 border-b p-2">
-        {(['review', 'new', 'imported'] as Tab[]).map((t) => (
-          <Button key={t} size="sm" variant={tab === t ? 'default' : 'ghost'} onClick={() => { setTab(t); setShown(PAGE) }}>
-            {TAB_LABEL[t]} ({rows.filter((r) => TAB_OF[r.status] === t).length})
-          </Button>
-        ))}
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="ghost" onClick={() => setConfirmStartOver(true)}>
-            Start over
-          </Button>
-        </div>
-      </div>
-
-      {tab !== 'imported' && (
-        <div className="flex flex-wrap items-center gap-2 border-b p-2 text-xs">
-          {tickedLines.length < actionableLines.length ? (
-            <Button size="sm" variant="outline" onClick={() => update(actionableLines, true)}>
-              Tick all
-            </Button>
-          ) : (
-            <Button size="sm" variant="outline" onClick={() => update(actionableLines, false)}>
-              Untick all
-            </Button>
-          )}
-          <span className="text-muted-foreground">{tickedLines.length} ticked:</span>
-          <select
-            className="h-8 rounded-md border bg-background px-2"
-            disabled={!tickedLines.length}
-            value=""
-            onChange={(e) =>
-              e.target.value &&
-              setWhoOverride((prev) => new Map([...prev, ...tickedLines.map((l) => [l, e.target.value] as const)]))
-            }
-          >
-            <option value="">Set who…</option>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>{m.display_name}</option>
-            ))}
-            {members.length > 1 && <option value={SHARED}>Shared (split evenly)</option>}
-          </select>
-          <select
-            className="h-8 rounded-md border bg-background px-2"
-            disabled={!tickedLines.length}
-            value=""
-            onChange={(e) => e.target.value && setCategory(tickedLines, e.target.value)}
-          >
-            <option value="">Set category…</option>
-            <CategoryOptions categories={liveCategories} />
-          </select>
-        </div>
-      )}
-
-      <div className="flex-1">
-        <StatementReviewList
-          rows={visible.slice(0, shown).map(effective)}
+  if (!isDesktop) {
+    return (
+      <>
+        <StatementReviewMobile
+          rows={rows.map(effective)}
           accepted={accepted}
           onAccept={update}
-          actionable={actionable}
-          editable={editable}
-          instrumentName={instrumentLabel}
-          categories={liveCategories}
-          categoryById={categoryById}
-          members={members}
+          onCategory={(line, categoryId) => setCategory([line], categoryId)}
           whoOf={whoOf}
-          onWho={onWho}
-          onCategory={(line, id) => setCategory([line], id)}
+          onWho={(line, who) => setWhoOverride((prev) => new Map(prev).set(line, who))}
+          members={members}
+          categories={categories ?? []}
+          instrumentName={instrumentName}
           unknownName={unknownName}
           onAsk={(name) => setAsking([name])}
-          onPlan={onPlan}
+          notices={notices}
+          toApply={toApply}
+          applying={applying}
+          onApply={apply}
+          onStartOver={() => setConfirmStartOver(true)}
         />
-      </div>
-
-      {!visible.length && <p className="p-4 text-sm text-muted-foreground">{EMPTY_TEXT[tab]}</p>}
-      {visible.length > shown && (
-        <div className="p-3 text-center">
-          <Button size="sm" variant="outline" onClick={() => setShown((n) => n + PAGE)}>
-            Show {Math.min(PAGE, visible.length - shown)} more ({visible.length - shown} left)
-          </Button>
-        </div>
-      )}
-      {/* On a phone Apply sits under the thumb, not in the toolbar at the top of a long list. */}
-      <div className="sticky bottom-0 flex items-center gap-3 border-t bg-background px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
-        <span className="flex-1 text-sm text-muted-foreground">
-          {toApply.length ? `${toApply.length} ${toApply.length === 1 ? 'line' : 'lines'} to import` : 'Tick the lines to import'}
-        </span>
-        <Button disabled={!toApply.length || applying} onClick={apply}>
-          {applying ? 'Applying…' : 'Apply'}
-        </Button>
-      </div>
-      {dialogs}
-    </div>
-  )
+        <Drawer open={asking != null} onOpenChange={(open) => !open && setAsking(null)}>
+          <DrawerContent>
+            <DrawerTitle className="sr-only">Who is this?</DrawerTitle>
+            <div className="pb-4">{askForm}</div>
+          </DrawerContent>
+        </Drawer>
+        {dialogs}
+      </>
+    )
+  }
 }

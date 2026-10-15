@@ -1,5 +1,9 @@
 # Balances shows spending capacity per row and net worth in the headline
 
+> **The headline is superseded by [ADR-0023](./0023-balances-leads-with-cash-after-card-spending.md)** (2026-10):
+> Balances now leads with Cash After Card Spending, not net worth. Net worth's
+> definition and the per-person panel totals below still stand.
+>
 > **Partly superseded by [ADR-0012](./0012-balances-rows-answer-what-is-due-next.md)** (v3.9).
 > The per-row rule below — that every row answers "how much can I still use?" —
 > no longer holds: a card row leads with its most recently closed Cycle Bill and

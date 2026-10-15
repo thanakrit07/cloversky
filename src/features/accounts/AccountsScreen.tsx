@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { differenceInCalendarDays, parse } from 'date-fns'
-import { CreditCard, MoreHorizontal, Plus } from 'lucide-react'
+import { ChevronDown, CreditCard, MoreHorizontal, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { DateField } from '@/components/DateField'
 import { SwipeableRow } from '@/components/SwipeableRow'
@@ -18,8 +18,8 @@ import { adjustmentCategory } from '@/lib/balanceAdjustments'
 import { useCardCycleAdjustments, type CardCycleAdjustment } from '@/lib/cardCycleAdjustments'
 import { useCards, useCreateCard, useUpdateCard, type Card } from '@/lib/cards'
 import { useCategories, type Category } from '@/lib/categories'
-import { accountBalance, cardOutstanding, memberNetWorth, setAside } from '@/lib/finance/balances'
-import { closedCycleAsOf, cycleBill } from '@/lib/finance/billingCycle'
+import { accountBalance, cardOutstanding, setAside, spentThisCycle } from '@/lib/finance/balances'
+import { closedCycleAsOf, cycleBill, cycleOf } from '@/lib/finance/billingCycle'
 import type { PersonFilter } from '@/lib/filters'
 import { useHousehold } from '@/lib/HouseholdContext'
 import {
@@ -232,7 +232,6 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
   const { data: cards } = useCards(householdId)
   const { data: transactions } = useTransactions(householdId, ALL_TIME)
   const { data: categories } = useCategories(householdId)
-  const { data: debts } = useUnsettledShares(householdId)
   // §6.3c: everything cycleBill needs, so a card row can lead with its
   // closed cycle's bill instead of capacity.
   const { data: installments } = useInstallments(householdId)
@@ -251,7 +250,6 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
   const allAccounts = accounts ?? []
   const allCards = cards ?? []
   const allTxns = transactions ?? []
-  const allDebts = debts ?? []
   const allInstallments = installments ?? []
   const allAdjustments = cardCycleAdjustments ?? []
   const postedPeriodKeys = postedPeriods?.keys ?? new Set<string>()
@@ -261,14 +259,18 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
     return setAside(card, allTxns, cardInstallments, postedPeriodKeys, adjustment, today)
   }
 
+  function spentThisCycleFor(card: Card) {
+    const { cardInstallments, adjustment } = closedBillFor(card, allTxns, allInstallments, postedPeriodKeys, allAdjustments, today)
+    const open = cycleOf(card, today)
+    const openAdjustment = allAdjustments.find((a) => a.card_id === card.id && a.cycle_start === open.start)?.amount ?? null
+    return spentThisCycle(card, allTxns, cardInstallments, postedPeriodKeys, adjustment, openAdjustment, today)
+  }
+
   // D18: a Common Pot has no owner and no per-person breakdown, so it sits
   // outside every filter below — every person filter sees it, and it is
   // never one of "mine" or "theirs".
   const potAccounts = allAccounts.filter((a) => a.owner_id === null)
   const potCards = allCards.filter((c) => c.owner_id === null)
-  const potBalance =
-    potAccounts.reduce((sum, a) => sum + accountBalance(a, allTxns, today), 0) -
-    potCards.reduce((sum, c) => sum + cardOutstanding(c, allTxns), 0)
 
   // D19: Balances honours the person filter like every other screen — "You"
   // shows only what's yours, so the app still works as a single-person
@@ -278,10 +280,23 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
   const ownedAccounts = visibleAccounts.filter((a) => a.owner_id !== null)
   const ownedCards = visibleCards.filter((c) => c.owner_id !== null)
 
-  // §6.3c: Accounts totals money held; Credit cards totals Set Aside — read
-  // as a pair, "this is what we have, this is what is already spoken for."
-  const accountsTotal = ownedAccounts.reduce((sum, a) => sum + accountBalance(a, allTxns, today), 0)
-  const cardsSetAsideTotal = ownedCards.reduce((sum, c) => sum + setAsideFor(c), 0)
+  // ADR-0023: the cash left once every baht already spent on a card is paid —
+  // closed bills (Set Aside) and the open cycle so far. Future installment
+  // periods are not spending yet; they live in Card debt. One function for
+  // the headline and every panel, so a person's panel and the headline can
+  // never disagree about what the figure means.
+  function cashPosition(panelAccounts: Account[], panelCards: Card[]) {
+    const cash = panelAccounts.reduce((sum, a) => sum + accountBalance(a, allTxns, today), 0)
+    const billsDue = panelCards.reduce((sum, c) => sum + setAsideFor(c), 0)
+    const thisCycle = panelCards.reduce((sum, c) => sum + spentThisCycleFor(c), 0)
+    return { cash, billsDue, thisCycle, afterCards: cash - billsDue - thisCycle }
+  }
+  const headline = cashPosition(ownedAccounts, ownedCards)
+  const cardDebtTotal = ownedCards.reduce((sum, c) => sum + cardOutstanding(c, allTxns), 0)
+  const overdueBills = ownedCards.filter((c) => {
+    const { dueDate } = closedBillFor(c, allTxns, allInstallments, postedPeriodKeys, allAdjustments, today)
+    return dueDate < today && setAsideFor(c) > 0
+  }).length
 
   // 2026-10 redesign: owner first, instrument type second. Each person is a
   // panel with their own net worth and their accounts and cards together —
@@ -312,59 +327,74 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
         bill={bill}
         dueDate={dueDate}
         outstanding={cardOutstanding(card, allTxns)}
+        leftToPay={setAsideFor(card)}
+        nextStatement={cycleOf(card, today).end}
         onOpen={() => !card.archived && onOpenCard(card.id)}
         onEdit={() => setEditingCard(card)}
         onDelete={() => setDeleting({ kind: 'card', id: card.id, name: card.name })}
       />
     )
   }
-  // §6.3c: a panel's footer is the held / set-aside pair for its own
-  // instruments — "this is what we have, this is what is already spoken for."
-  const panelFooter = (panelAccounts: Account[], panelCards: Card[]) =>
-    `${formatBaht(panelAccounts.reduce((sum, a) => sum + accountBalance(a, allTxns, today), 0))} held · ${formatBaht(
-      panelCards.reduce((sum, c) => sum + setAsideFor(c), 0),
-    )} set aside`
+  // A panel's footer is the headline's sum for its own instruments, in the
+  // same words; parts that are zero are left out.
+  const panelFooter = ({ cash, billsDue, thisCycle }: ReturnType<typeof cashPosition>) =>
+    [
+      `${formatBaht(cash)} cash`,
+      billsDue > 0 && `${formatBaht(billsDue)} bills due`,
+      thisCycle > 0 && `${formatBaht(thisCycle)} this cycle`,
+    ]
+      .filter(Boolean)
+      .join(' · ')
 
-  const householdNetWorth = members.reduce(
-    (sum, m) => sum + memberNetWorth(m.id, allAccounts, allCards, allTxns, allDebts, today),
-    0,
-  )
-  const headlineNetWorth =
-    person === 'all' ? householdNetWorth : memberNetWorth(person, allAccounts, allCards, allTxns, allDebts, today)
   const pendingReviewTotal = (pendingReview ?? []).reduce((sum, t) => sum + t.amount, 0)
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-4 md:max-w-4xl">
-      <div className="flex items-end justify-between gap-4 px-1 pt-2">
-        <div className="min-w-0">
-          <span className="text-[13px] text-muted-foreground">Net worth</span>
-          <span
-            className={cn(
-              'mt-1 block text-3xl font-semibold leading-none tracking-[-0.035em] tabular-nums',
-              headlineNetWorth < 0 && 'text-destructive',
-            )}
-          >
-            {formatBaht(headlineNetWorth)}
-          </span>
-          {/* D20's household-wide pair, so it survives the split into panels. */}
-          <span className="mt-2 block text-xs tabular-nums text-muted-foreground">
-            {formatBaht(accountsTotal)} held · {formatBaht(cardsSetAsideTotal)} set aside
-          </span>
-          {pendingReview && pendingReview.length > 0 && (
-            <span className="mt-1 block text-xs text-muted-foreground">
-              {formatBaht(pendingReviewTotal)} awaiting review, not counted above.
-            </span>
-          )}
+      <div className="space-y-3 px-1 pt-2">
+        <div className="flex items-start justify-between gap-3">
+          <span className="text-[13px] text-muted-foreground">Cash after card spending</span>
+          <div className="-mt-1 flex shrink-0 gap-1">
+            <Button size="sm" variant="outline" onClick={() => setEditingAccount('new')}>
+              <Plus className="size-4" />
+              Account
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setEditingCard('new')}>
+              <Plus className="size-4" />
+              Card
+            </Button>
+          </div>
         </div>
-        <div className="flex shrink-0 gap-1 pb-1">
-          <Button size="sm" variant="outline" onClick={() => setEditingAccount('new')}>
-            <Plus className="size-4" />
-            Account
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => setEditingCard('new')}>
-            <Plus className="size-4" />
-            Card
-          </Button>
+        <span
+          className={cn(
+            '-mt-2 block text-4xl font-semibold leading-none tracking-[-0.035em] tabular-nums',
+            headline.afterCards < 0 && 'text-destructive',
+          )}
+        >
+          {formatBaht(headline.afterCards)}
+        </span>
+        {/* The sum spelled out, so the big figure is never a mystery. */}
+        <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
+          <dt className="text-muted-foreground">Cash in accounts</dt>
+          <dd className="text-right tabular-nums">{formatBaht(headline.cash)}</dd>
+          <dt className="text-muted-foreground">− Card bills due</dt>
+          <dd className="text-right tabular-nums">{formatBaht(headline.billsDue)}</dd>
+          <dt className="text-muted-foreground">− Spent on cards this cycle</dt>
+          <dd className="text-right tabular-nums">{formatBaht(headline.thisCycle)}</dd>
+        </dl>
+        {overdueBills > 0 && (
+          <p className="text-xs font-medium text-destructive">
+            {overdueBills === 1 ? '1 card bill is' : `${overdueBills} card bills are`} past due
+          </p>
+        )}
+        {pendingReview && pendingReview.length > 0 && (
+          <p className="text-xs text-muted-foreground">{formatBaht(pendingReviewTotal)} awaiting review, not counted above.</p>
+        )}
+        <div className="flex items-baseline justify-between rounded-xl bg-muted/60 px-3 py-2.5 text-sm">
+          <span>
+            Card debt
+            <span className="block text-[11px] text-muted-foreground">incl. future installments</span>
+          </span>
+          <span className="text-lg font-semibold tabular-nums">{formatBaht(cardDebtTotal)}</span>
         </div>
       </div>
 
@@ -373,11 +403,15 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
           above the instrument panels costs nothing on a quiet day. */}
       <BetweenUsSection />
 
-      <div className="grid gap-3 md:grid-cols-2">
+      {/* grid-cols-1 is not redundant: the implicit track is minmax(auto, 1fr),
+          which grows to a card row's unwrapped secondary line and made the
+          whole tab scroll sideways on a phone. */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {ownerGroups.map((g) => {
           const member = members.find((m) => m.id === g.ownerId)
           const groupAccounts = ownedAccounts.filter((a) => a.owner_id === g.ownerId)
           const groupCards = ownedCards.filter((c) => c.owner_id === g.ownerId)
+          const position = cashPosition(groupAccounts, groupCards)
           return (
             <InstrumentPanel
               key={g.ownerId}
@@ -391,12 +425,8 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
                 </>
               }
               // Filtered to one person this would only repeat the headline.
-              total={
-                person === 'all'
-                  ? memberNetWorth(g.ownerId, allAccounts, allCards, allTxns, allDebts, today)
-                  : null
-              }
-              footer={panelFooter(groupAccounts, groupCards)}
+              total={person === 'all' ? position.afterCards : null}
+              footer={panelFooter(position)}
             >
               {groupAccounts.map(accountRow)}
               {groupCards.map(cardRow)}
@@ -404,7 +434,11 @@ export function AccountsScreen({ person, onOpenAccount, onOpenCard }: Props) {
           )
         })}
         {hasPot && (
-          <InstrumentPanel title="Common pot" total={potBalance} footer={panelFooter(potAccounts, potCards)}>
+          <InstrumentPanel
+            title="Common pot"
+            total={cashPosition(potAccounts, potCards).afterCards}
+            footer={panelFooter(cashPosition(potAccounts, potCards))}
+          >
             {potAccounts.map(accountRow)}
             {potCards.map(cardRow)}
           </InstrumentPanel>
@@ -541,44 +575,117 @@ function CardRow({
   bill,
   dueDate,
   outstanding,
+  leftToPay,
+  nextStatement,
   onOpen,
   onEdit,
   onDelete,
 }: {
   card: Card
   // §6.3c/ADR-0012: the row's own question is "what's due next" — the
-  // closed cycle's bill and its due date; owed/left are the secondary line.
+  // closed cycle's bill and its due date. Credit used / available / limit
+  // are one tap away in the expanded details (ADR-0023).
   bill: number
   dueDate: string
   outstanding: number
+  leftToPay: number
+  nextStatement: string
   onOpen: () => void
   onEdit: () => void
   onDelete: () => void
 }) {
+  const [open, setOpen] = useState(false)
+  const used = Math.max(0, outstanding)
+  const usedPct = card.credit_limit > 0 ? Math.min(100, Math.round((used / card.credit_limit) * 100)) : 0
+  const paid = Math.max(0, bill - leftToPay)
+
   return (
     <li>
       <SwipeableRow onDelete={onDelete}>
-        <div className="flex items-center gap-2.5 py-1.5 text-sm">
-          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-warning text-warning-foreground">
-            <CreditCard className="size-4" />
-          </span>
-          <button onClick={onOpen} className="min-w-0 flex-1 text-left">
-            <span className={cn('block truncate', card.archived && 'text-muted-foreground line-through')}>{card.name}</span>
-            <span className="block truncate text-[11px] text-muted-foreground">
-              due {dayMonthLabel(dueDate)} · {formatBaht(outstanding)} owed · {formatBaht(card.credit_limit - outstanding)} left
+        {/* Opaque and padded rather than margined: SwipeableRow's delete
+            layer sits behind and would show through any gap. */}
+        <div className={cn('bg-card', open && 'pb-2')}>
+          <div className="flex items-center gap-2.5 py-1.5 text-sm">
+            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-warning text-warning-foreground">
+              <CreditCard className="size-4" />
             </span>
-          </button>
-          <span className="tabular-nums">{formatBaht(bill)}</span>
-          <RowMenu
-            label={card.name}
-            items={[
-              { label: 'Edit', onSelect: onEdit },
-              { label: 'Delete', onSelect: onDelete, destructive: true },
-            ]}
-          />
+            <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-1 text-left">
+              <span className={cn('truncate', card.archived && 'text-muted-foreground line-through')}>{card.name}</span>
+              <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+            </button>
+            {bill <= 0 ? (
+              <span className="text-xs text-muted-foreground">Nothing due</span>
+            ) : leftToPay === 0 ? (
+              <span className="text-right leading-tight">
+                <span className="block tabular-nums text-muted-foreground line-through">{formatBaht(bill)}</span>
+                <span className="block text-[11px] text-good">Paid</span>
+              </span>
+            ) : (
+              <span className="text-right leading-tight">
+                <span className="block tabular-nums">{formatBaht(leftToPay)}</span>
+                {dueDate < todayIso() ? (
+                  <span className="block text-[11px] font-medium text-destructive">past due · {dayMonthLabel(dueDate)}</span>
+                ) : (
+                  <span className="block text-[11px] text-muted-foreground">due {dayMonthLabel(dueDate)}</span>
+                )}
+              </span>
+            )}
+            <RowMenu
+              label={card.name}
+              items={[
+                { label: 'Edit', onSelect: onEdit },
+                { label: 'Delete', onSelect: onDelete, destructive: true },
+              ]}
+            />
+          </div>
+          {open && (
+            <div className="ml-10.5 space-y-3 rounded-xl bg-muted/50 p-3 text-sm">
+              <dl className="grid grid-cols-2 gap-3">
+                <CardFact
+                  label={`Payment due ${dayMonthLabel(dueDate)}`}
+                  value={formatBaht(bill)}
+                  sub={paid > 0 && leftToPay > 0 ? `${formatBaht(paid)} paid · ${formatBaht(leftToPay)} to go` : undefined}
+                />
+                <CardFact label="Next statement" value={dayMonthLabel(nextStatement)} />
+              </dl>
+              <div>
+                <div className="mb-1 flex justify-between text-[11px] text-muted-foreground">
+                  <span>Credit used {usedPct}%</span>
+                  <span className="tabular-nums">{formatBaht(used)}</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  {/* Red only near the limit — tomato is also the primary colour,
+                      so a red bar at any level would read as a warning. */}
+                  <div
+                    className={cn('h-full rounded-full', usedPct > 90 ? 'bg-destructive' : 'bg-foreground/50')}
+                    style={{ width: `${usedPct}%` }}
+                  />
+                </div>
+              </div>
+              <dl className="grid grid-cols-2 gap-3">
+                <CardFact label="Available credit" value={formatBaht(card.credit_limit - used)} />
+                <CardFact label="Credit limit" value={formatBaht(card.credit_limit)} />
+              </dl>
+              {!card.archived && (
+                <button onClick={onOpen} className="text-xs font-medium text-primary">
+                  Open card →
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </SwipeableRow>
     </li>
+  )
+}
+
+function CardFact({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[11px] text-muted-foreground">{label}</dt>
+      <dd className="tabular-nums">{value}</dd>
+      {sub && <dd className="text-[11px] text-muted-foreground">{sub}</dd>}
+    </div>
   )
 }
 

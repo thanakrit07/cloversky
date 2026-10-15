@@ -98,7 +98,15 @@ export function SwipeableRow({ onDelete, children }: Props) {
   const x = dragging ? offset : open ? -REVEAL_WIDTH : 0
 
   return (
-    <div className="relative overflow-hidden" onMouseEnter={() => setRevealed(true)} onMouseLeave={() => setRevealed(false)}>
+    // Hover-reveal is for a real mouse only. A touch tap also fires
+    // compatibility mouse events (mouseenter included), and with no
+    // mouseleave until the finger taps elsewhere, every tap on a row's own
+    // controls used to slide Delete out and leave it there.
+    <div
+      className="relative overflow-hidden"
+      onPointerEnter={(e) => e.pointerType === 'mouse' && setRevealed(true)}
+      onPointerLeave={(e) => e.pointerType === 'mouse' && setRevealed(false)}
+    >
       {/* Content comes first in the DOM (not just visually) so Tab reaches
           the row's own content before its secondary Delete action. */}
       <div
