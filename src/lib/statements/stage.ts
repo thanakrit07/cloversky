@@ -4,6 +4,7 @@
 // which of its accounts) are the part that moves into `counterparties`
 // (ADR-0020) once the review screen can fill them in.
 import { periodDate } from '../finance/billingCycle'
+import { formatBaht } from '../format'
 import { normalizeStatementText } from '../statementImport'
 import type { ParseResult, StatementLine } from './types'
 
@@ -21,6 +22,8 @@ export interface StagedRow {
   needsPlan: boolean
   /** Which period of how many, for an installment line. */
   installment: { k: number; total: number } | null
+  /** The card's interest line for this period, when it printed one beside it. */
+  periodInterest?: number
   /** The account or card whose statement this line came from; keeps the line's key stable. */
   statement: string
   /** The name after the account on a bank transfer line, as printed. */
@@ -31,7 +34,7 @@ export interface StagedRow {
 
 export interface StageIssue {
   /** What went wrong, for a caller that wants to act on it rather than just show it. */
-  code: 'orphan_conversion'
+  code: 'orphan_conversion' | 'plan_amount_differs'
   /** The day of the line the issue is about. */
   date: string
   instrument: string
@@ -44,6 +47,11 @@ export interface PlanRef {
   instrument: string
   total: number
   startDate: string
+  /** What the plan posts each period, and its last period when that differs; checked against what the card charged. */
+  monthly?: number
+  final?: number | null
+  /** The interest line it posts beside each period (0036); null when monthly is the whole charge. */
+  interest?: number | null
 }
 
 export interface StageContext {
@@ -120,9 +128,10 @@ const days = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) /
 const PLAN_WINDOW_DAYS = 20
 
 /** A plan with the same number of periods whose period k falls about when this line posted. */
-export function planCovers(plans: PlanRef[], instrument: string, { k, total }: { k: number; total: number }, when: string): boolean {
-  return plans.some((p) => p.instrument === instrument && p.total === total && days(periodDate(p.startDate, k), when) <= PLAN_WINDOW_DAYS)
+function coveringPlan(plans: PlanRef[], instrument: string, { k, total }: { k: number; total: number }, when: string): PlanRef | undefined {
+  return plans.find((p) => p.instrument === instrument && p.total === total && days(periodDate(p.startDate, k), when) <= PLAN_WINDOW_DAYS)
 }
+export const planCovers = (...args: Parameters<typeof coveringPlan>) => coveringPlan(...args) !== undefined
 
 /** The start date a plan needs for its period k to fall on `when`: k−1 months earlier. */
 export const planStartFor = (when: string, k: number) => periodDate(when, 2 - k)
@@ -161,6 +170,24 @@ export function stageStatements(files: StageInput[], ctx: StageContext): { rows:
     }
   }
 
+  // A card that prints a period's interest on its own line ("IPP Interest
+  // 003/006") bills the period as two lines. A plan posts the same two rows
+  // (0036), so the interest line rides along with its period: a plan is made
+  // with it and checked against it. Paired by card, period and posting day,
+  // and only when that day has one such period.
+  const periodKey = (instrument: string, l: StatementLine) => `${instrument}|${l.installment!.k}/${l.installment!.total}|${l.postedDate ?? l.date}`
+  const principals = new Map<string, number>()
+  const interest = new Map<string, number>()
+  for (const [instrument, lines] of byInstrument) {
+    for (const l of lines) {
+      if (!l.installment || l.direction !== 'debit' || dropped.has(l)) continue
+      const key = periodKey(instrument, l)
+      if (l.isInterest) interest.set(key, (interest.get(key) ?? 0) + l.amount)
+      else principals.set(key, (principals.get(key) ?? 0) + 1)
+    }
+  }
+  const paired = (key: string) => principals.get(key) === 1 && interest.has(key)
+
   for (const { instrument, result, fileName } of files) {
     for (const l of result.lines) {
       if (dropped.has(l)) continue
@@ -178,8 +205,31 @@ export function stageStatements(files: StageInput[], ctx: StageContext): { rows:
       }
 
       if (l.installment) {
-        if (planCovers(ctx.plans, instrument, l.installment, l.postedDate ?? l.date)) continue // the app posts these itself
-        rows.push({ ...base, kind: 'expense', category: l.isInterest ? 'Card interest' : 'Installments', from: instrument, to: '', needsPlan: true, installment: l.installment })
+        const key = periodKey(instrument, l)
+        if (l.isInterest && paired(key)) continue // rides along with its period
+        const lineInterest = !l.isInterest && paired(key) ? interest.get(key)! : 0
+        const plan = coveringPlan(ctx.plans, instrument, l.installment, l.postedDate ?? l.date)
+        if (plan) {
+          // The app posts these itself; say so when the period costs a different amount
+          // from the card's. Compared in total, so a plan from before 0036 whose monthly
+          // amount already holds the interest still agrees.
+          const { k, total } = l.installment
+          const principal = k === total ? (plan.final ?? plan.monthly) : plan.monthly
+          const charged = Math.round((l.amount + lineInterest) * 100) / 100
+          const posts = principal == null ? null : Math.round((principal + (plan.interest ?? 0)) * 100) / 100
+          if (!l.isInterest && posts != null && Math.abs(posts - charged) >= 0.01) {
+            issues.push({
+              code: 'plan_amount_differs',
+              date: l.postedDate ?? l.date,
+              instrument,
+              reason: `The card charged ${formatBaht(charged)} for period ${k} of ${total}${lineInterest ? ` (${formatBaht(lineInterest)} of it interest)` : ''}, but the plan posts ${formatBaht(posts)}. Delete the plan and make it again at the card's amounts so the two agree`,
+              text: l.text,
+              amount: charged,
+            })
+          }
+          continue
+        }
+        rows.push({ ...base, kind: 'expense', category: l.isInterest ? 'Card interest' : 'Installments', from: instrument, to: '', needsPlan: true, installment: l.installment, ...(lineInterest ? { periodInterest: lineInterest } : {}) })
         continue
       }
       if (l.isInterest) {

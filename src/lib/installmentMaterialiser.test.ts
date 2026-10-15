@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { parsePeriodSourceKey, periodSourceKey } from './installmentMaterialiser'
+import { interestSourceKey, parsePeriodSourceKey, periodSourceKey } from './installmentMaterialiser'
 
 describe('periodSourceKey', () => {
   it('round-trips through the parser', () => {
     const key = periodSourceKey('abc-123', 7)
-    expect(parsePeriodSourceKey(key)).toEqual({ installmentId: 'abc-123', periodNo: 7 })
+    expect(parsePeriodSourceKey(key)).toEqual({ installmentId: 'abc-123', periodNo: 7, interest: false })
+  })
+  it('tells a period\'s interest line from the period, under the same period number', () => {
+    expect(parsePeriodSourceKey(interestSourceKey('abc-123', 7))).toEqual({ installmentId: 'abc-123', periodNo: 7, interest: true })
   })
 })
 

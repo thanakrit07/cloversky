@@ -21,6 +21,8 @@ export interface Installment {
   card_id: string | null
   account_id: string | null
   annual_interest_rate: number
+  /** The card's interest line each period, posted as its own row (0036); null = monthly_amount is everything. */
+  period_interest: number | null
   is_cash_advance: boolean
   owner_id: string | null
   note: string | null
@@ -39,7 +41,7 @@ export interface InstallmentPayment {
 }
 
 const INSTALLMENT_COLUMNS =
-  'id, household_id, name, category_id, start_date, total_periods, monthly_amount, final_amount, card_id, account_id, annual_interest_rate, is_cash_advance, owner_id, note, status, split'
+  'id, household_id, name, category_id, start_date, total_periods, monthly_amount, final_amount, card_id, account_id, annual_interest_rate, is_cash_advance, owner_id, note, status, split, period_interest'
 
 export function useInstallments(householdId: string) {
   return useQuery({
@@ -118,7 +120,8 @@ export function usePostedPeriods(householdId: string) {
       const transactionIdByKey: PostedPeriodsData = {}
       for (const row of data ?? []) {
         const parsed = parsePeriodSourceKey(row.source_key as string | null)
-        if (!parsed) continue
+        // The interest row posts with its period, so the period's key stands for both.
+        if (!parsed || parsed.interest) continue
         transactionIdByKey[`${parsed.installmentId}:${parsed.periodNo}`] = row.id as string
       }
       return transactionIdByKey

@@ -7,7 +7,7 @@ import { useCardCycleAdjustments } from '@/lib/cardCycleAdjustments'
 import { useCards } from '@/lib/cards'
 import { useHousehold } from '@/lib/HouseholdContext'
 import { formatBaht } from '@/lib/format'
-import { cycleBill, cycleOf, periodDate } from '@/lib/finance/billingCycle'
+import { cycleBill, cycleOf, periodCharge, periodDate } from '@/lib/finance/billingCycle'
 import { monthlyEquivalent, nextOccurrence } from '@/lib/finance/recurrence'
 import { useInstallmentPayments, useInstallments, usePostedPeriods } from '@/lib/installments'
 import { ALL_TIME, dayMonthLabel } from '@/lib/month'
@@ -154,7 +154,7 @@ function useComingUpRows(): TimelineRow[] {
         date,
         label: inst.name,
         sublabel: `Period ${paid + 1}/${inst.total_periods} posted`,
-        posted: inst.monthly_amount,
+        posted: periodCharge(inst, paid + 1),
         projected: 0,
       })
     }

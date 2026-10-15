@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { AlertTriangle, Check, ChevronDown, Plus } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { periodDate } from '@/lib/finance/billingCycle'
+import { periodCharge, periodDate } from '@/lib/finance/billingCycle'
 import { useHousehold } from '@/lib/HouseholdContext'
 import { formatBaht } from '@/lib/format'
 import {
@@ -64,10 +64,8 @@ export function InstallmentsScreen() {
         {active.map((inst) => {
           const paid = paidCountByInstallment.get(inst.id) ?? 0
           const remaining = inst.total_periods - paid
-          const outstanding =
-            remaining > 0
-              ? (remaining - 1) * inst.monthly_amount + (inst.final_amount ?? inst.monthly_amount)
-              : 0
+          let outstanding = 0
+          for (let n = paid + 1; n <= inst.total_periods; n++) outstanding += periodCharge(inst, n)
           const highInterest = inst.annual_interest_rate >= 5
           const isExpanded = expanded === inst.id
           return (

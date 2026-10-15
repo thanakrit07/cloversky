@@ -159,6 +159,21 @@ describe('making a plan from an installment line', () => {
     expect(planCovers(plans, 'CardX', { k: 3, total: 6 }, '2026-09-04')).toBe(true)
     expect(planCovers(plans, 'KTC', { k: 3, total: 6 }, '2026-09-04')).toBe(false)
   })
+  const withInterest = parseCardx(['23/09/26 1,000.00 100.00 13/10/26', '04/09 04/09 DEMO SOFA 003/006 200.00', '04/09 04/09 IPP Interest 003/006 26.13'], ASOF)!
+  it('carries the interest line on its period, to make the plan with', () => {
+    const { rows } = stageStatements([{ instrument: 'CardX', result: withInterest }], ctx())
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ needsPlan: true, amount: 200, periodInterest: 26.13, installment: { k: 3, total: 6 } })
+  })
+  it('warns when a plan posts a different amount from what the card charged, and is quiet when they agree', () => {
+    const plan = { instrument: 'CardX', total: 6, startDate: planStartFor('2026-09-04', 3) }
+    const off = stageStatements([{ instrument: 'CardX', result: withInterest }], ctx({ plans: [{ ...plan, monthly: 200, final: null }] }))
+    expect(off.rows).toHaveLength(0)
+    expect(off.issues).toEqual([expect.objectContaining({ code: 'plan_amount_differs', amount: 226.13, reason: expect.stringContaining('posts 200.00') })])
+    expect(stageStatements([{ instrument: 'CardX', result: withInterest }], ctx({ plans: [{ ...plan, monthly: 200, final: null, interest: 26.13 }] })).issues).toEqual([])
+    // A plan from before 0036 holds the interest inside its monthly amount: that agrees too.
+    expect(stageStatements([{ instrument: 'CardX', result: withInterest }], ctx({ plans: [{ ...plan, monthly: 226.13, final: null }] })).issues).toEqual([])
+  })
   it('names the plan after the shop, without the period marker either bank prints', () => {
     expect(withoutPeriodMarker('DEMO SOFA 002/006')).toBe('DEMO SOFA')
     expect(withoutPeriodMarker('02/06 DEMO SOFA')).toBe('DEMO SOFA')

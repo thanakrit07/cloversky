@@ -750,6 +750,8 @@ Treating either as cash-to-set-aside overstates what the household needs.
 
 **Shipped (2026-10, Upcoming → Debt).** A plan owes its periods dated after today (each period is already a posted row, ADR-0001); a card counts only a closed bill still unpaid past its due date, never `cardOutstanding`, which would count every plan twice. "Left each month" is recurring income − recurring costs − debt due. The simulator is not built yet: the household has no prepayable loan to aim extra money at.
 
+**Interest as its own line (0036, 2026-10).** A card plan bills each period as principal plus an interest line, so a plan carries `period_interest` (flat, entered as % per month the way banks quote it; the baht figure can be typed over to match a statement) and the materialiser posts it as a second row per period, `source_key installment:<id>:<n>:interest`, labelled "ดอกเบี้ย <plan> (งวดที่ n/N)". The ledger then reads line for line like the statement, and statement import checks each period's two lines against the plan in total. `null` keeps a pre-0036 plan as it was — its monthly amount is the whole charge. Interest that falls with the balance (cash advances) is not modelled.
+
 ### 6.5 Dashboard figures
 
 * **Primary card — monthly summary**: income / expense / net for the selected month, split by person. Transfers are excluded from both sides. Answers "what did we spend this month?"

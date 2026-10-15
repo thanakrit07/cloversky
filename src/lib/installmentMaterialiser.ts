@@ -25,6 +25,11 @@ export function periodSourceKey(installmentId: string, periodNo: number): string
   return `${periodSourceKeyPrefix(installmentId)}${periodNo}`
 }
 
+/** The period's interest line (0036), posted beside it. */
+export function interestSourceKey(installmentId: string, periodNo: number): string {
+  return `${periodSourceKey(installmentId, periodNo)}:interest`
+}
+
 /** Every period of one plan, for a prefix match on `source_key`. */
 export function periodSourceKeyPrefix(installmentId: string): string {
   return `installment:${installmentId}:`
@@ -33,12 +38,12 @@ export function periodSourceKeyPrefix(installmentId: string): string {
 /** Inverse of `periodSourceKey`; null when the key isn't an installment one. */
 export function parsePeriodSourceKey(
   sourceKey: string | null,
-): { installmentId: string; periodNo: number } | null {
+): { installmentId: string; periodNo: number; interest: boolean } | null {
   if (!sourceKey) return null
-  const [tag, installmentId, periodNoStr] = sourceKey.split(':')
+  const [tag, installmentId, periodNoStr, part] = sourceKey.split(':')
   if (tag !== 'installment' || !installmentId) return null
   const periodNo = Number(periodNoStr)
-  return Number.isFinite(periodNo) ? { installmentId, periodNo } : null
+  return Number.isFinite(periodNo) ? { installmentId, periodNo, interest: part === 'interest' } : null
 }
 
 export async function materialiseInstallmentsDue(
@@ -83,6 +88,28 @@ export async function materialiseInstallmentsDue(
 
     const rows: Record<string, unknown>[] = []
     for (let n = 1; n <= inst.total_periods; n++) {
+      // The card's interest line for the period (0036), as its own row so the
+      // ledger reads like the statement. Checked on its own key: a plan made
+      // before 0036 never posted one, and a period posted already keeps its own.
+      const interestKey = interestSourceKey(inst.id, n)
+      if (inst.period_interest && !postedSet.has(interestKey)) {
+        rows.push({
+          household_id: householdId,
+          date: periodDate(inst.start_date, n),
+          kind: 'expense',
+          category_id: inst.category_id,
+          category_kind: 'expense',
+          note: null,
+          amount: inst.period_interest,
+          owner_id: inst.owner_id,
+          from_card_id: cardBilled ? inst.card_id : null,
+          from_account_id: cardBilled ? null : inst.account_id,
+          source: 'installment',
+          source_key: interestKey,
+          confirmed: true,
+        })
+      }
+
       const sourceKey = periodSourceKey(inst.id, n)
       if (postedSet.has(sourceKey)) continue
 

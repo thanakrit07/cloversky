@@ -6,7 +6,7 @@
 // cardOutstanding, which already holds every future period and would count
 // each plan twice.
 
-import { periodDate } from './billingCycle.ts'
+import { periodCharge, periodDate } from './billingCycle.ts'
 
 export interface PlanLike {
   id: string
@@ -15,6 +15,7 @@ export interface PlanLike {
   total_periods: number
   monthly_amount: number
   final_amount: number | null
+  period_interest?: number | null
   annual_interest_rate: number
 }
 
@@ -43,7 +44,7 @@ function futurePeriods(p: PlanLike, today: string) {
   for (let n = 1; n <= p.total_periods; n++) {
     const date = periodDate(p.start_date, n)
     if (date <= today) continue
-    out.push({ month: date.slice(0, 7), amount: n === p.total_periods ? (p.final_amount ?? p.monthly_amount) : p.monthly_amount })
+    out.push({ month: date.slice(0, 7), amount: periodCharge(p, n) })
   }
   return out
 }
@@ -59,7 +60,7 @@ export function debts(plans: PlanLike[], carried: CarriedCard[], today: string):
       kind: 'installment',
       rate: p.annual_interest_rate,
       outstanding: periods.reduce((s, x) => s + x.amount, 0),
-      monthly: p.monthly_amount,
+      monthly: p.monthly_amount + (p.period_interest ?? 0),
       endsIn: periods[periods.length - 1].month,
     })
   }
