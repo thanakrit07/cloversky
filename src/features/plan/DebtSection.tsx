@@ -13,6 +13,7 @@ import { ALL_TIME, monthLabel, shiftMonth } from '@/lib/month'
 import { useRecurringRules } from '@/lib/recurring'
 import { useTransactions } from '@/lib/transactions'
 import { cn } from '@/lib/utils'
+import { DebtPrototype } from './DebtPrototype'
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
@@ -22,7 +23,7 @@ function todayIso(): string {
 // household is debt-free, and what is left each month as plans end. "Left"
 // is recurring income − recurring costs − debt due: the money free to save
 // or pay down, before everyday spending.
-export function DebtSection() {
+export function DebtSection({ hideList = false }: { hideList?: boolean }) {
   const { householdId } = useHousehold()
   const { data: installments } = useInstallments(householdId)
   const { data: cards } = useCards(householdId)
@@ -81,7 +82,7 @@ export function DebtSection() {
       return { ...m, after, dueAfter: months.find((x) => x.month === after)?.due ?? 0 }
     })
 
-  return (
+  const current = (
     <div className="space-y-4">
       <h2 className="px-1 text-sm font-medium">Debt</h2>
 
@@ -107,7 +108,7 @@ export function DebtSection() {
         </div>
       </dl>
 
-      <section className="space-y-2">
+      <section className={cn('space-y-2', hideList && 'hidden')}>
         <h3 className="px-1 text-xs font-medium text-muted-foreground">Pay first — highest interest at the top</h3>
         <ol className="overflow-hidden rounded-2xl border bg-card">
           {list.map((d, i) => {
@@ -157,6 +158,35 @@ export function DebtSection() {
         </ol>
       </section>
     </div>
+  )
+
+  if (!import.meta.env.DEV || hideList) return current
+  return <DebtPrototype current={current} list={list} months={months} income={income} net={net} dueNow={dueNow} milestones={milestones} />
+}
+
+export function DebtFigures({ total, lastMonth, income, net, dueNow }: { total: number; lastMonth: string; income: number; net: number; dueNow: number }) {
+  return (
+    <dl className="grid grid-cols-3 gap-3 px-1">
+      <div>
+        <dt className="text-xs text-muted-foreground">Owed</dt>
+        <dd className="text-xl font-semibold tracking-[-0.02em] tabular-nums">{formatBaht(total)}</dd>
+      </div>
+      <div>
+        <dt className="text-xs text-muted-foreground">Debt-free after</dt>
+        <dd className="text-xl font-semibold tracking-[-0.02em]">{monthLabel(lastMonth)}</dd>
+      </div>
+      <div>
+        <dt className="text-xs text-muted-foreground">Left each month</dt>
+        {income > 0 ? (
+          <dd className="tabular-nums">
+            <span className={cn('text-xl font-semibold tracking-[-0.02em]', net - dueNow < 0 && 'text-destructive')}>{formatBaht(net - dueNow)}</span>
+            <span className="block text-xs text-muted-foreground">then {formatBaht(net)} debt-free</span>
+          </dd>
+        ) : (
+          <dd className="text-xs text-muted-foreground">Add income as a recurring rule to see what's left</dd>
+        )}
+      </div>
+    </dl>
   )
 }
 

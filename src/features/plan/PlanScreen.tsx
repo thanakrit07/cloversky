@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { CardForecastTab } from './CardForecastTab'
 import { DebtSection } from './DebtSection'
 import { RecurringRuleSheet } from './RecurringRuleSheet'
+import { UpcomingDensityPrototype } from './UpcomingDensityPrototype'
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -24,7 +25,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // How far ahead "Coming up" looks — enough to answer "what's due soon"
 // without turning into a second forecast tab (CardForecastTab already
 // covers the long horizon, month by month).
-const HORIZON_DAYS = 45
+export const HORIZON_DAYS = 45
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
@@ -47,7 +48,7 @@ function scheduleLabel(rule: RecurringRule): string {
   return `${every}${rule.interval > 1 ? 'years' : 'Yearly'} · ${rule.day_of_month} ${MONTHS[(rule.month_of_year ?? 1) - 1]}`
 }
 
-interface TimelineRow {
+export interface TimelineRow {
   key: string
   date: string
   label: string
@@ -67,7 +68,7 @@ interface TimelineRow {
 // subscription's cost was silently counted twice: once inside its card's
 // own bill, once again inside Recurring's "Fixed costs" — Fixed costs now
 // excludes anything billed to a card, since that's covered here instead.
-function useComingUpRows(): TimelineRow[] {
+export function useComingUpRows(): TimelineRow[] {
   const { householdId } = useHousehold()
   const { data: cards } = useCards(householdId)
   const { data: installments } = useInstallments(householdId)
@@ -169,7 +170,7 @@ const ROW_ICON = { card: CreditCard, recurring: Repeat, installment: CalendarSyn
 // 2026-10 redesign: a dated timeline, the way Records hangs a day's rows off
 // its date — the day in a left column, that day's rows beside it, each with
 // Balances' icon square (amber for a card bill).
-function ComingUpSection({ rows, onEditRecurring }: { rows: TimelineRow[]; onEditRecurring: (rule: RecurringRule) => void }) {
+export function ComingUpSection({ rows, onEditRecurring }: { rows: TimelineRow[]; onEditRecurring: (rule: RecurringRule) => void }) {
   if (rows.length === 0) {
     return <p className="text-sm text-muted-foreground">Nothing due soon.</p>
   }
@@ -232,7 +233,7 @@ function ComingUpSection({ rows, onEditRecurring }: { rows: TimelineRow[]; onEdi
   )
 }
 
-function RecurringTab() {
+export function RecurringTab() {
   const { householdId } = useHousehold()
   const { data: rules } = useRecurringRules(householdId)
   const updateRule = useUpdateRecurringRule(householdId)
@@ -330,7 +331,7 @@ export function PlanScreen() {
   const posted = rows.reduce((sum, r) => sum + r.posted, 0)
   const projected = rows.reduce((sum, r) => sum + r.projected, 0)
 
-  return (
+  const current = (
     <div className="mx-auto max-w-2xl space-y-6 p-4">
       {/* 2026-10 redesign: the same headline as Records and Balances — the
           tab's one number, big — here everything due inside Coming up's
@@ -369,7 +370,13 @@ export function PlanScreen() {
         <InstallmentsScreen />
       </section>
 
-      {editingRule && <RecurringRuleSheet rule={editingRule} onClose={() => setEditingRule(null)} />}
     </div>
+  )
+
+  return (
+    <>
+      {import.meta.env.DEV ? <UpcomingDensityPrototype current={current} onEditRecurring={setEditingRule} /> : current}
+      {editingRule && <RecurringRuleSheet rule={editingRule} onClose={() => setEditingRule(null)} />}
+    </>
   )
 }
