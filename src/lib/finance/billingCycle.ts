@@ -136,6 +136,14 @@ export interface InstallmentLike {
   total_periods: number
   monthly_amount: number
   final_amount: number | null
+  /** Interest the card bills beside each period (0036); null = monthly_amount is everything. */
+  period_interest?: number | null
+}
+
+/** Everything period n charges: its principal (the last one absorbs the rounding) plus its interest line. */
+export function periodCharge(installment: InstallmentLike, n: number): number {
+  const principal = n === installment.total_periods && installment.final_amount != null ? installment.final_amount : installment.monthly_amount
+  return principal + (installment.period_interest ?? 0)
 }
 
 /**
@@ -155,11 +163,7 @@ export function installmentChargeInCycle(
   for (let n = 1; n <= installment.total_periods; n++) {
     if (postedPeriods.has(`${installment.id}:${n}`)) continue
     const date = periodDate(installment.start_date, n)
-    if (date >= cycle.start && date <= cycle.end) {
-      total += n === installment.total_periods && installment.final_amount != null
-        ? installment.final_amount
-        : installment.monthly_amount
-    }
+    if (date >= cycle.start && date <= cycle.end) total += periodCharge(installment, n)
   }
   return total
 }

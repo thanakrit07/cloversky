@@ -140,7 +140,7 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
     () =>
       (installments ?? []).flatMap((i) => {
         const instrument = (cards ?? []).find((c) => c.id === i.card_id)?.name ?? (accounts ?? []).find((a) => a.id === i.account_id)?.name
-        return instrument ? [{ instrument, total: i.total_periods, startDate: i.start_date }] : []
+        return instrument ? [{ instrument, total: i.total_periods, startDate: i.start_date, monthly: i.monthly_amount, final: i.final_amount, interest: i.period_interest }] : []
       }),
     [installments, cards, accounts],
   )
@@ -185,6 +185,7 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
       from: { accountId: r.fromAccountId, cardId: r.fromCardId },
       date: startOf(r),
       periods: r.installment!.total,
+      periodInterest: r.periodInterest ?? undefined,
     }
   }
   // The purchase already in the ledger keeps its name, category and who bears it;

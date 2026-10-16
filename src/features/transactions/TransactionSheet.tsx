@@ -651,7 +651,8 @@ export function TransactionSheet({ open, onOpenChange, transaction, scan }: Prop
                 className={stripChip(repInstOpen, false)}
               >
                 <CalendarSync className="size-3.5" />
-                <span className="text-muted-foreground">Repeat</span>
+                {/* A saved row offers only Instalment, so say that rather than Repeat. */}
+                <span className="text-muted-foreground">{transaction ? 'Instalment' : 'Repeat'}</span>
               </button>
               {repInstOpen && (
                 <div className="absolute left-0 bottom-full z-10 mb-1.5 w-40 space-y-1 rounded-lg border bg-popover p-1.5 shadow-md">

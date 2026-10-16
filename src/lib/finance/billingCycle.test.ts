@@ -177,6 +177,12 @@ describe('installmentChargeInCycle', () => {
     expect(installmentChargeInCycle(installment, cycle)).toBe(750)
   })
 
+  it('adds the interest line the card bills beside each period', () => {
+    const installment = { id: 'inst-1', start_date: '2026-01-15', total_periods: 2, monthly_amount: 1000, final_amount: 750, period_interest: 26.13 }
+    const cycle = { start: '2026-02-06', end: '2026-03-05', dueDate: '2026-03-20' }
+    expect(installmentChargeInCycle(installment, cycle)).toBe(776.13)
+  })
+
   it('excludes a period already posted as a real transaction (D11 double-count guard)', () => {
     const installment = { id: 'inst-1', start_date: '2026-01-15', total_periods: 12, monthly_amount: 1000, final_amount: null }
     const cycle = { start: '2026-02-06', end: '2026-03-05', dueDate: '2026-03-20' }

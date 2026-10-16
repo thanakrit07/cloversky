@@ -3,7 +3,7 @@
 // separate from billingCycle.ts because the two figures deliberately use
 // different time windows — see the account/card asymmetry below.
 
-import { addDays, closedCycleAsOf, cycleBill, cycleOf, type InstallmentLike } from './billingCycle.ts'
+import { addDays, closedCycleAsOf, cycleBill, cycleOf, type InstallmentLike, type TransactionChargeLike } from './billingCycle.ts'
 
 export interface AccountLike {
   id: string
@@ -251,4 +251,25 @@ export function commonPotBalance(accounts: AccountLike[], cards: CardLike[], tra
     if (c.owner_id === null) total -= cardOutstanding(c, transactions)
   }
   return total
+}
+
+// §6.3c/ADR-0012: a card's most recently closed Cycle Bill and when it's
+// due — the same cycleBill call CardCycleSummary and CardForecastTab make, so
+// Balances, Upcoming and the card screens can't disagree. `postedPeriods`
+// and `adjustments` are household-wide; installments get filtered to this
+// card's active plans.
+export function closedBillFor<I extends InstallmentLike & { card_id: string | null; status: string }>(
+  card: CardLike,
+  transactions: (TransactionLike & TransactionChargeLike)[],
+  installments: I[],
+  postedPeriods: ReadonlySet<string>,
+  adjustments: { card_id: string; cycle_start: string; amount: number }[],
+  today: string,
+) {
+  const closed = closedCycleAsOf(card, today)
+  const cardTxns = transactions.filter((t) => t.from_card_id === card.id || t.to_card_id === card.id)
+  const cardInstallments = installments.filter((i) => i.card_id === card.id && i.status === 'active')
+  const adjustment = adjustments.find((a) => a.card_id === card.id && a.cycle_start === closed.start)?.amount ?? null
+  const bill = cycleBill({ cycle: closed, cardId: card.id, transactions: cardTxns, installments: cardInstallments, adjustment, postedPeriods })
+  return { bill, dueDate: closed.dueDate, cardInstallments, adjustment }
 }

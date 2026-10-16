@@ -48,6 +48,8 @@ export interface StatementRow {
   needsPlan: boolean
   /** Which period of how many, for an installment line. */
   installment: { k: number; total: number } | null
+  /** The card's interest line for that period, when the statement printed one. */
+  periodInterest: number | null
 }
 
 export interface StatementContext {
@@ -187,6 +189,7 @@ export function buildStatementRows(rows: Record<string, string>[], ctx: Statemen
       matchId,
       needsPlan,
       installment,
+      periodInterest: Number(raw['Interest']) || null,
     }
   })
 }

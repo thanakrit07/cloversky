@@ -15,4 +15,6 @@ export interface EntryPrefill {
   date: string
   /** How many periods, when the plan's length is already known (a statement prints it). */
   periods?: number
+  /** The card's interest line for one period, when a statement printed it. */
+  periodInterest?: number
 }

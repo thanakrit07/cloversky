@@ -119,7 +119,9 @@ export function TransactionsScreen({
 
   function installmentPeriodOf(t: Transaction) {
     if (t.source !== 'installment' || !t.from_card_id) return null
-    return parsePeriodSourceKey(t.source_key)
+    // The paid tick sits on the period itself, not on its interest line.
+    const parsed = parsePeriodSourceKey(t.source_key)
+    return parsed?.interest ? null : parsed
   }
 
   // ADR-0016: a period's label is composed here, never read out of `note`.
@@ -215,6 +217,14 @@ export function TransactionsScreen({
       const list = map.get(t.date) ?? []
       list.push(t)
       map.set(t.date, list)
+    }
+    // A period's interest line (0036) posts in the same batch, so created_at
+    // can't order the pair: put it straight under its period, as on the statement.
+    for (const [date, list] of map) {
+      const keys = new Set(list.map((t) => t.source_key))
+      const isPairedInterest = (t: Transaction) => t.source_key?.endsWith(':interest') && keys.has(t.source_key.slice(0, -':interest'.length))
+      const interestOf = new Map(list.filter(isPairedInterest).map((t) => [t.source_key!.slice(0, -':interest'.length), t]))
+      map.set(date, list.flatMap((t) => (isPairedInterest(t) ? [] : interestOf.has(t.source_key!) ? [t, interestOf.get(t.source_key!)!] : [t])))
     }
     return [...map.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1))
   }, [filtered])

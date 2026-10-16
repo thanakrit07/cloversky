@@ -109,7 +109,22 @@ export function InstallmentSheet({ installment, onClose, prefill, supersedes }: 
     accountId: installment?.account_id ?? prefill?.from.accountId ?? null,
     cardId: installment?.card_id ?? prefill?.from.cardId ?? null,
   })
-  const [interestRate, setInterestRate] = useState(String(installment?.annual_interest_rate ?? '0'))
+  // Interest the way a Thai card plan quotes it: a flat % of the price per
+  // month, billed as its own line every period. The baht figure follows the
+  // rate until typed over (to match a statement to the satang); the stored
+  // annual rate is the same % × 12, for the payoff ranking (DESIGN §6.4).
+  const [monthlyRate, setMonthlyRate] = useState(() => {
+    if (installment) return String(Math.round((installment.annual_interest_rate / 12) * 10000) / 10000)
+    if (prefill?.periodInterest && prefill.amount > 0) return String(Math.round((prefill.periodInterest / prefill.amount) * 1000000) / 10000)
+    return '0'
+  })
+  const [interestTyped, setInterestTyped] = useState<string | null>(() => {
+    if (installment) return installment.period_interest == null ? '' : String(installment.period_interest)
+    return prefill?.periodInterest != null ? String(prefill.periodInterest) : null
+  })
+  const rateInterest = Math.round(previewTotal * (Number(monthlyRate) || 0)) / 100
+  // A plan made before 0036 keeps an empty field: its monthly amount already is the whole charge.
+  const periodInterest = interestTyped === null ? rateInterest : interestTyped === '' ? 0 : Number(interestTyped) || 0
   const [isCashAdvance, setIsCashAdvance] = useState(installment?.is_cash_advance ?? false)
   const [whoBears, setWhoBears] = useState<PlanWhoBearsValue>({
     ownerId: installment ? installment.owner_id : (prefill?.ownerId ?? self.id),
@@ -152,7 +167,8 @@ export function InstallmentSheet({ installment, onClose, prefill, supersedes }: 
       final_amount: previewFinal !== previewMonthly ? previewFinal : null,
       card_id: instrument.cardId,
       account_id: instrument.accountId,
-      annual_interest_rate: Number(interestRate),
+      annual_interest_rate: Math.round((Number(monthlyRate) || 0) * 12 * 10000) / 10000,
+      period_interest: periodInterest > 0 ? periodInterest : null,
       is_cash_advance: isCashAdvance,
       owner_id: whoBears.ownerId,
       split: whoBears.split,
@@ -314,10 +330,30 @@ export function InstallmentSheet({ installment, onClose, prefill, supersedes }: 
         value={instrument.accountId || instrument.cardId ? instrumentLabel(instrument) : 'Select account or card'}
       />
 
-      <div className="space-y-1.5">
-        <Label htmlFor="inst-rate">Annual interest rate (%)</Label>
-        <Input id="inst-rate" type="number" inputMode="decimal" value={interestRate} onChange={(e) => setInterestRate(e.target.value)} onFocus={panel.close} />
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="inst-rate">Interest (% per month)</Label>
+          <Input id="inst-rate" type="number" inputMode="decimal" value={monthlyRate} onChange={(e) => setMonthlyRate(e.target.value)} onFocus={panel.close} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="inst-interest">Interest per period</Label>
+          <Input
+            id="inst-interest"
+            type="number"
+            inputMode="decimal"
+            placeholder="0.00"
+            value={interestTyped ?? (rateInterest > 0 ? String(rateInterest) : '')}
+            onChange={(e) => setInterestTyped(e.target.value)}
+            onFocus={panel.close}
+          />
+        </div>
       </div>
+      {periodInterest > 0 && periodsNum > 0 && (
+        <p className="-mt-2 text-xs text-muted-foreground">
+          {(Math.round((Number(monthlyRate) || 0) * 12 * 100) / 100).toString()}%/yr · {formatBaht(periodInterest * periodsNum)} interest in all, posted as its own line each period ·{' '}
+          {formatBaht(previewTotal + periodInterest * periodsNum)} with the price
+        </p>
+      )}
 
       <div className="space-y-1.5">
         <Label>Responsible</Label>

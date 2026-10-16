@@ -1,20 +1,22 @@
-import { useMemo, useState } from 'react'
-import { CalendarSync, CreditCard, Plus, Repeat } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
+import { CalendarSync, ChevronDown, CreditCard, Plus, Repeat } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Switch } from '@/components/ui/switch'
 import { InstallmentsScreen } from '@/features/installments/InstallmentsScreen'
 import { useCardCycleAdjustments } from '@/lib/cardCycleAdjustments'
 import { useCards } from '@/lib/cards'
 import { useHousehold } from '@/lib/HouseholdContext'
 import { formatBaht } from '@/lib/format'
-import { cycleBill, cycleOf, periodDate } from '@/lib/finance/billingCycle'
-import { nextOccurrence } from '@/lib/finance/recurrence'
+import { cycleBill, cycleOf, periodCharge, periodDate } from '@/lib/finance/billingCycle'
+import { monthlyEquivalent, nextOccurrence } from '@/lib/finance/recurrence'
 import { useInstallmentPayments, useInstallments, usePostedPeriods } from '@/lib/installments'
-import { ALL_TIME, dayMonthLabel } from '@/lib/month'
+import { ALL_TIME, dayMonthLabel, monthLabel } from '@/lib/month'
 import { useRecurringRules, useUpdateRecurringRule, type RecurringRule } from '@/lib/recurring'
 import { useTransactions } from '@/lib/transactions'
 import { cn } from '@/lib/utils'
 import { CardForecastTab } from './CardForecastTab'
+import { DebtSection, useDebtModel } from './DebtSection'
 import { RecurringRuleSheet } from './RecurringRuleSheet'
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -24,6 +26,8 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // without turning into a second forecast tab (CardForecastTab already
 // covers the long horizon, month by month).
 const HORIZON_DAYS = 45
+// Coming up grows with every rule and plan; past this many rows it waits behind "Show all".
+const COMING_UP_PEEK = 5
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
@@ -44,13 +48,6 @@ function scheduleLabel(rule: RecurringRule): string {
     return `${every}${rule.interval > 1 ? 'months' : 'Monthly'} · day ${rule.day_of_month}`
   }
   return `${every}${rule.interval > 1 ? 'years' : 'Yearly'} · ${rule.day_of_month} ${MONTHS[(rule.month_of_year ?? 1) - 1]}`
-}
-
-// Approximate monthly equivalent, for the fixed-costs summary.
-function monthlyEquivalent(rule: RecurringRule): number {
-  if (rule.freq === 'monthly') return rule.amount / rule.interval
-  if (rule.freq === 'weekly') return (rule.amount * 52) / 12 / rule.interval
-  return rule.amount / 12 / rule.interval
 }
 
 interface TimelineRow {
@@ -160,7 +157,7 @@ function useComingUpRows(): TimelineRow[] {
         date,
         label: inst.name,
         sublabel: `Period ${paid + 1}/${inst.total_periods} posted`,
-        posted: inst.monthly_amount,
+        posted: periodCharge(inst, paid + 1),
         projected: 0,
       })
     }
@@ -235,6 +232,21 @@ function ComingUpSection({ rows, onEditRecurring }: { rows: TimelineRow[]; onEdi
         )
       })}
     </ol>
+  )
+}
+
+function Fold({ title, summary, children }: { title: string; summary: string; children: ReactNode }) {
+  return (
+    <Collapsible className="group">
+      <CollapsibleTrigger className="flex w-full items-center gap-3 px-3 py-3 text-left">
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium">{title}</span>
+          <span className="block truncate text-xs text-muted-foreground tabular-nums">{summary}</span>
+        </span>
+        <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="px-3 pb-4">{children}</CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -333,6 +345,17 @@ function RecurringTab() {
 export function PlanScreen() {
   const [editingRule, setEditingRule] = useState<RecurringRule | null>(null)
   const rows = useComingUpRows()
+  const [showAllRows, setShowAllRows] = useState(false)
+  const { householdId } = useHousehold()
+  const { data: rules } = useRecurringRules(householdId)
+  const { data: installments } = useInstallments(householdId)
+  const debt = useDebtModel()
+  const activeRules = (rules ?? []).filter((r) => r.active)
+  const fixedCosts = activeRules.filter((r) => r.kind === 'expense' && !r.from_card_id).reduce((s, r) => s + monthlyEquivalent(r), 0)
+  const runningPlans = (installments ?? []).filter((i) => i.status === 'active').length
+  const debtSummary = debt.list.length
+    ? `${formatBaht(debt.list.reduce((s, d) => s + d.outstanding, 0))} owed · debt-free after ${monthLabel(debt.months.at(-1)!.month)}`
+    : 'No debt'
   const posted = rows.reduce((sum, r) => sum + r.posted, 0)
   const projected = rows.reduce((sum, r) => sum + r.projected, 0)
 
@@ -361,15 +384,28 @@ export function PlanScreen() {
 
       <section className="space-y-2">
         <h2 className="px-1 text-sm font-medium">Coming up</h2>
-        <ComingUpSection rows={rows} onEditRecurring={setEditingRule} />
+        <ComingUpSection rows={showAllRows ? rows : rows.slice(0, COMING_UP_PEEK)} onEditRecurring={setEditingRule} />
+        {rows.length > COMING_UP_PEEK && (
+          <button onClick={() => setShowAllRows(!showAllRows)} className="w-full py-1 text-center text-xs text-muted-foreground">
+            {showAllRows ? 'Show less' : `Show all ${rows.length}`}
+          </button>
+        )}
       </section>
 
-      <section>
-        <RecurringTab />
-      </section>
-      <section>
-        <InstallmentsScreen />
-      </section>
+      {/* 2026-10: the management sections fold to one line each, so the
+          forward view stays the screen and what generates it is a tap away
+          (chosen on prototype/upcoming-density; no sub-tabs, D-0004). */}
+      <div className="divide-y rounded-2xl border bg-card">
+        <Fold title="Debt" summary={debtSummary}>
+          <DebtSection />
+        </Fold>
+        <Fold title="Recurring" summary={`${activeRules.length} active · ${formatBaht(fixedCosts)}/mo fixed`}>
+          <RecurringTab />
+        </Fold>
+        <Fold title="Installment plans" summary={`${runningPlans} running`}>
+          <InstallmentsScreen />
+        </Fold>
+      </div>
 
       {editingRule && <RecurringRuleSheet rule={editingRule} onClose={() => setEditingRule(null)} />}
     </div>

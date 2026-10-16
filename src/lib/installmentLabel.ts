@@ -25,8 +25,8 @@ export interface LabellableTransaction {
   source_key: string | null
 }
 
-export function formatPeriodLabel(planName: string, periodNo: number, totalPeriods: number): string {
-  return `${planName} (งวดที่ ${periodNo}/${totalPeriods})`
+export function formatPeriodLabel(planName: string, periodNo: number, totalPeriods: number, interest = false): string {
+  return `${interest ? 'ดอกเบี้ย ' : ''}${planName} (งวดที่ ${periodNo}/${totalPeriods})`
 }
 
 /**
@@ -45,5 +45,5 @@ export function installmentPeriodLabel(
   if (!parsed) return null
   const plan = planById.get(parsed.installmentId)
   if (!plan) return null
-  return formatPeriodLabel(plan.name, parsed.periodNo, plan.total_periods)
+  return formatPeriodLabel(plan.name, parsed.periodNo, plan.total_periods, parsed.interest)
 }
