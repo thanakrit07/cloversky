@@ -3,7 +3,7 @@ import { parseCardx } from './cardx'
 import { parseKbank } from './kbank'
 import { parseKtc } from './ktc'
 import { parseUob } from './uob'
-import { planCovers, planStartFor, stageStatements, withoutPeriodMarker, type StageContext } from './stage'
+import { planStartFor, plansFor, stageStatements, withoutPeriodMarker, type StageContext } from './stage'
 
 // Every line, name and amount below is invented.
 const ASOF = '2026-09-27'
@@ -157,8 +157,9 @@ describe('making a plan from an installment line', () => {
     expect(planStartFor('2026-01-15', 2)).toBe('2025-12-15')
     expect(planStartFor('2026-09-04', 1)).toBe('2026-09-04')
     const plans = [{ instrument: 'CardX', total: 6, startDate: planStartFor('2026-09-04', 3) }]
-    expect(planCovers(plans, 'CardX', { k: 3, total: 6 }, '2026-09-04')).toBe(true)
-    expect(planCovers(plans, 'KTC', { k: 3, total: 6 }, '2026-09-04')).toBe(false)
+    const covers = (instrument: string) => plansFor(plans, [{ instrument, installment: { k: 3, total: 6 }, when: '2026-09-04', charged: 0, name: '' }], true)[0] !== undefined
+    expect(covers('CardX')).toBe(true)
+    expect(covers('KTC')).toBe(false)
   })
   const withInterest = parseCardx(['23/09/26 1,000.00 100.00 13/10/26', '04/09 04/09 DEMO SOFA 003/006 200.00', '04/09 04/09 IPP Interest 003/006 26.13'], ASOF)!
   it('carries the interest line on its period, to make the plan with', () => {
@@ -212,17 +213,25 @@ describe('making a plan from an installment line', () => {
   it('reads UOB\'s INT line as interest and pairs it with the PRIN line of the same name', () => {
     const uob = parseUob(
       [
-        '04 SEP 04 SEP DEMO SOFA PRIN 003/006 200.00',
-        '04 SEP 04 SEP DEMO PHONE PRIN 003/006 500.00',
-        '04 SEP 04 SEP DEMO PHONE INT 003/006 41.50',
-        '04 SEP 04 SEP DEMO SOFA INT 003/006 26.13',
+        '04 SEP 04 SEP DEMO SOFA PRIN 03/06 200.00',
+        '04 SEP 04 SEP DEMO PHONE PRIN 03/06 500.00',
+        '04 SEP 04 SEP DEMO PHONE INT 03/06 41.50',
+        '04 SEP 04 SEP DEMO SOFA INT 03/06 26.13',
       ],
       ASOF,
     )!
     expect(uob.lines.map((l) => l.isInterest)).toEqual([false, false, true, true])
+    expect(uob.lines[0].installment).toEqual({ k: 3, total: 6 })
     expect(interestOf(stageStatements([{ instrument: 'UOB TMRW', result: uob }], ctx()).rows)).toEqual([
-      ['DEMO SOFA PRIN 003/006', 26.13],
-      ['DEMO PHONE PRIN 003/006', 41.5],
+      ['DEMO SOFA PRIN 03/06', 26.13],
+      ['DEMO PHONE PRIN 03/06', 41.5],
+    ])
+  })
+  it('pairs KTC interest that repeats the shop name in full', () => {
+    const ktc = parseKtc(['02/01/26 02/01/26 02/06 DEMO PAY ABC 900.00', '02/01/26 02/01/26 02/06 DEMO PAY ABC INT00.74% 40.00', '02/01/26 02/01/26 02/06 DEMO PAY XYZ 300.00'], ASOF)!
+    expect(interestOf(stageStatements([{ instrument: 'KTC', result: ktc }], ctx()).rows)).toEqual([
+      ['02/06 DEMO PAY ABC', 40],
+      ['02/06 DEMO PAY XYZ', 0],
     ])
   })
   it('still pairs the only period that day when the names do not agree, and never pairs a guess', () => {
@@ -233,9 +242,31 @@ describe('making a plan from an installment line', () => {
     expect(rows.filter((r) => r.periodInterest)).toEqual([])
     expect(rows).toHaveLength(3) // the unpaired interest line stays its own row, as before
   })
+  // Two plans on one card, both at period 3 of 6 on the same day.
+  const twoPlans = parseCardx(['23/09/26 1,000.00 100.00 13/10/26', '04/09 04/09 DEMO SOFA 003/006 200.00', '04/09 04/09 DEMO PHONE 003/006 500.00'], ASOF)!
+  const start = planStartFor('2026-09-04', 3)
+  const sofa = { instrument: 'CardX', total: 6, startDate: start, monthly: 200, final: null, name: 'DEMO SOFA' }
+  const phone = { instrument: 'CardX', total: 6, startDate: start, monthly: 500, final: null, name: 'My phone' }
+  it('gives each period line the plan whose amount agrees, whatever order the plans come in', () => {
+    expect(stageStatements([{ instrument: 'CardX', result: twoPlans }], ctx({ plans: [phone, sofa] }))).toEqual({ rows: [], issues: [] })
+  })
+  it('leaves a line for the plan still to be made, instead of handing it the other plan', () => {
+    const { rows, issues } = stageStatements([{ instrument: 'CardX', result: twoPlans }], ctx({ plans: [sofa] }))
+    expect(rows).toEqual([expect.objectContaining({ text: 'DEMO PHONE 003/006', needsPlan: true })])
+    expect(issues).toEqual([])
+  })
+  it('in review, hides only the line a new plan was made from — by amount, else by name', () => {
+    const line = (name: string, charged: number) => ({ instrument: 'CardX', installment: { k: 3, total: 6 }, when: '2026-09-04', charged, name })
+    expect(plansFor([sofa], [line('DEMO SOFA 003/006', 200), line('DEMO PHONE 003/006', 500)], false)).toEqual([sofa, undefined])
+    expect(plansFor([{ ...sofa, monthly: 210 }], [line('DEMO SOFA 003/006', 200)], false)).toEqual([{ ...sofa, monthly: 210 }])
+    expect(plansFor([phone], [line('DEMO SOFA 003/006', 200)], false)).toEqual([undefined])
+    // Staging still hands the one plan left to a line, so a plan at the wrong amount is warned about.
+    expect(plansFor([phone], [line('DEMO SOFA 003/006', 200)], true)).toEqual([phone])
+  })
   it('names the plan after the shop, without the period marker either bank prints', () => {
     expect(withoutPeriodMarker('DEMO SOFA 002/006')).toBe('DEMO SOFA')
     expect(withoutPeriodMarker('02/06 DEMO SOFA')).toBe('DEMO SOFA')
     expect(withoutPeriodMarker('DEMO 24/7 SHOP')).toBe('DEMO 24/7 SHOP')
+    expect(withoutPeriodMarker('DEMO SOFA PRIN 01/06')).toBe('DEMO SOFA')
   })
 })
