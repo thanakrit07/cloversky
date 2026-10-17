@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseCardx } from './cardx'
 import { parseKbank } from './kbank'
 import { parseKtc } from './ktc'
+import { parseUob } from './uob'
 import { planCovers, planStartFor, stageStatements, withoutPeriodMarker, type StageContext } from './stage'
 
 // Every line, name and amount below is invented.
@@ -173,6 +174,64 @@ describe('making a plan from an installment line', () => {
     expect(stageStatements([{ instrument: 'CardX', result: withInterest }], ctx({ plans: [{ ...plan, monthly: 200, final: null, interest: 26.13 }] })).issues).toEqual([])
     // A plan from before 0036 holds the interest inside its monthly amount: that agrees too.
     expect(stageStatements([{ instrument: 'CardX', result: withInterest }], ctx({ plans: [{ ...plan, monthly: 226.13, final: null }] })).issues).toEqual([])
+  })
+  // Two plans at the same period, posted the same day: the card's date and
+  // period no longer tell their interest lines apart.
+  const interestOf = (rows: { text: string; periodInterest?: number }[]) => rows.map((r) => [r.text, r.periodInterest ?? 0])
+  it('pairs CardX interest with the period printed just above it', () => {
+    const cardx = parseCardx(
+      [
+        '23/09/26 1,000.00 100.00 13/10/26',
+        '04/09 04/09 DEMO SOFA 003/006 200.00',
+        '04/09 04/09 IPP Interest 003/006 26.13',
+        '04/09 04/09 DEMO PHONE 003/006 500.00',
+        '04/09 04/09 IPP Interest 003/006 41.50',
+      ],
+      ASOF,
+    )!
+    expect(interestOf(stageStatements([{ instrument: 'CardX', result: cardx }], ctx()).rows)).toEqual([
+      ['DEMO SOFA 003/006', 26.13],
+      ['DEMO PHONE 003/006', 41.5],
+    ])
+  })
+  it('pairs KTC interest by the shop name it repeats, cut short', () => {
+    const ktc = parseKtc(
+      [
+        '02/01/26 02/01/26 02/06 DEMO TRAVEL FD Internet 1,420.11',
+        '02/01/26 02/01/26 02/06 DEMO PHONE SHOP 900.00',
+        '02/01/26 02/01/26 02/06 DEMO PHONE S INT00.74% 40.00',
+        '02/01/26 02/01/26 02/06 DEMO TRAVEL FD I INT00.74% 63.05',
+      ],
+      ASOF,
+    )!
+    expect(interestOf(stageStatements([{ instrument: 'KTC', result: ktc }], ctx()).rows)).toEqual([
+      ['02/06 DEMO TRAVEL FD Internet', 63.05],
+      ['02/06 DEMO PHONE SHOP', 40],
+    ])
+  })
+  it('reads UOB\'s INT line as interest and pairs it with the PRIN line of the same name', () => {
+    const uob = parseUob(
+      [
+        '04 SEP 04 SEP DEMO SOFA PRIN 003/006 200.00',
+        '04 SEP 04 SEP DEMO PHONE PRIN 003/006 500.00',
+        '04 SEP 04 SEP DEMO PHONE INT 003/006 41.50',
+        '04 SEP 04 SEP DEMO SOFA INT 003/006 26.13',
+      ],
+      ASOF,
+    )!
+    expect(uob.lines.map((l) => l.isInterest)).toEqual([false, false, true, true])
+    expect(interestOf(stageStatements([{ instrument: 'UOB TMRW', result: uob }], ctx()).rows)).toEqual([
+      ['DEMO SOFA PRIN 003/006', 26.13],
+      ['DEMO PHONE PRIN 003/006', 41.5],
+    ])
+  })
+  it('still pairs the only period that day when the names do not agree, and never pairs a guess', () => {
+    const lone = parseKtc(['02/01/26 02/01/26 02/06 DEMO SHOP 900.00', '02/01/26 02/01/26 02/06 OTHER NAME INT00.74% 40.00'], ASOF)!
+    expect(interestOf(stageStatements([{ instrument: 'KTC', result: lone }], ctx()).rows)).toEqual([['02/06 DEMO SHOP', 40]])
+    const first = parseCardx(['23/09/26 1,000.00 100.00 13/10/26', '04/09 04/09 IPP Interest 003/006 26.13', '04/09 04/09 DEMO SOFA 003/006 200.00', '04/09 04/09 DEMO PHONE 003/006 500.00'], ASOF)!
+    const { rows } = stageStatements([{ instrument: 'CardX', result: first }], ctx())
+    expect(rows.filter((r) => r.periodInterest)).toEqual([])
+    expect(rows).toHaveLength(3) // the unpaired interest line stays its own row, as before
   })
   it('names the plan after the shop, without the period marker either bank prints', () => {
     expect(withoutPeriodMarker('DEMO SOFA 002/006')).toBe('DEMO SOFA')

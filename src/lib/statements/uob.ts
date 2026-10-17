@@ -36,7 +36,8 @@ export const parseUob: Parser = (rawLines, asOf) => {
       direction: m[7] ? 'credit' : 'debit',
       text: m[5],
       installment: marker ? { k: Number(marker[1]), total: Number(marker[2]) } : null,
-      isInterest: /INTEREST/i.test(m[5]),
+      // A plan's period prints as "<shop> PRIN 003/006" and its interest as "<shop> INT 003/006".
+      isInterest: /INTEREST/i.test(m[5]) || (!!marker && /\sINT\s+\d{3}\/\d{3}$/.test(m[5])),
     })
   })
   if (lines.length === 0) return null

@@ -139,6 +139,14 @@ export const planStartFor = (when: string, k: number) => periodDate(when, 2 - k)
 /** The shop's name without the "002/006" or "02/06" a card prints for the period. */
 export const withoutPeriodMarker = (text: string) => text.replace(/^\d{2,3}\/\d{2,3}\s+|\s+\d{2,3}\/\d{2,3}$/g, '').trim()
 
+/** The shop's name as both lines of a period print it, for pairing the two. */
+const shopName = (text: string) =>
+  withoutPeriodMarker(text)
+    .replace(/^IPP Interest$/i, '')
+    .replace(/\s+(PRIN|INT)$|\s+INT\d[\d.]*%$/i, '')
+    .trim()
+    .toUpperCase()
+
 export function stageStatements(files: StageInput[], ctx: StageContext): { rows: StagedRow[]; issues: StageIssue[] } {
   const rows: StagedRow[] = []
   const issues: StageIssue[] = []
@@ -170,23 +178,32 @@ export function stageStatements(files: StageInput[], ctx: StageContext): { rows:
     }
   }
 
-  // A card that prints a period's interest on its own line ("IPP Interest
-  // 003/006") bills the period as two lines. A plan posts the same two rows
-  // (0036), so the interest line rides along with its period: a plan is made
-  // with it and checked against it. Paired by card, period and posting day,
-  // and only when that day has one such period.
-  const periodKey = (instrument: string, l: StatementLine) => `${instrument}|${l.installment!.k}/${l.installment!.total}|${l.postedDate ?? l.date}`
-  const principals = new Map<string, number>()
-  const interest = new Map<string, number>()
-  for (const [instrument, lines] of byInstrument) {
-    for (const l of lines) {
-      if (!l.installment || l.direction !== 'debit' || dropped.has(l)) continue
-      const key = periodKey(instrument, l)
-      if (l.isInterest) interest.set(key, (interest.get(key) ?? 0) + l.amount)
-      else principals.set(key, (principals.get(key) ?? 0) + 1)
-    }
+  // A card that prints a period's interest on its own line bills the period
+  // as two lines. A plan posts the same two rows (0036), so the interest line
+  // rides along with its period: a plan is made with it and checked against
+  // it. Its period is the one on the same card, period and posting day —
+  // and, since a card posts every plan's period on the same day, with the
+  // same shop name (KTC cuts it short, UOB swaps PRIN for INT); CardX prints
+  // no name ("IPP Interest"), only the period line just above it.
+  const interestOf = new Map<StatementLine, number>()
+  const pairedInterest = new Set<StatementLine>()
+  for (const { result } of files) {
+    const lines = result.lines.filter((l) => !dropped.has(l))
+    const isPeriod = (l: StatementLine) => !!l.installment && l.direction === 'debit' && !l.isInterest
+    lines.forEach((l, i) => {
+      if (!l.installment || !l.isInterest || l.direction !== 'debit') return
+      const same = (p: StatementLine) =>
+        isPeriod(p) && !interestOf.has(p) && p.installment!.k === l.installment!.k && p.installment!.total === l.installment!.total && (p.postedDate ?? p.date) === (l.postedDate ?? l.date)
+      const name = shopName(l.text)
+      let candidates = lines.filter(same)
+      const named = name ? candidates.filter((p) => shopName(p.text).startsWith(name)) : []
+      if (named.length) candidates = named // no name match: fall back to the only period that day, if there is one
+      if (candidates.length > 1 && i > 0 && same(lines[i - 1])) candidates = [lines[i - 1]]
+      if (candidates.length !== 1) return
+      interestOf.set(candidates[0], l.amount)
+      pairedInterest.add(l)
+    })
   }
-  const paired = (key: string) => principals.get(key) === 1 && interest.has(key)
 
   for (const { instrument, result, fileName } of files) {
     for (const l of result.lines) {
@@ -205,9 +222,8 @@ export function stageStatements(files: StageInput[], ctx: StageContext): { rows:
       }
 
       if (l.installment) {
-        const key = periodKey(instrument, l)
-        if (l.isInterest && paired(key)) continue // rides along with its period
-        const lineInterest = !l.isInterest && paired(key) ? interest.get(key)! : 0
+        if (pairedInterest.has(l)) continue // rides along with its period
+        const lineInterest = interestOf.get(l) ?? 0
         const plan = coveringPlan(ctx.plans, instrument, l.installment, l.postedDate ?? l.date)
         if (plan) {
           // The app posts these itself; say so when the period costs a different amount
