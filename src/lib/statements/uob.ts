@@ -6,7 +6,8 @@ import type { Parser, StatementLine, Unreadable } from './types'
 const MONTHS: Record<string, number> = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 }
 const STARTS_LIKE_LINE = /^\d{2} [A-Z]{3} \d{2} [A-Z]{3} /
 const LINE = /^(\d{2}) ([A-Z]{3}) (\d{2}) ([A-Z]{3}) (.+?) ([\d,]+\.\d{2})( CR)?$/
-const MARKER = /(?:^| )(\d{3})\/(\d{3})$/
+// "01/06" on a plan's lines; k ≤ total keeps a shop name ending in a date out.
+const MARKER = /(?:^| )(\d{2,3})\/(\d{2,3})$/
 
 export const parseUob: Parser = (rawLines, asOf) => {
   const lines: StatementLine[] = []
@@ -28,6 +29,7 @@ export const parseUob: Parser = (rawLines, asOf) => {
       return
     }
     const marker = MARKER.exec(m[5])
+    const installment = marker && Number(marker[1]) <= Number(marker[2]) ? { k: Number(marker[1]), total: Number(marker[2]) } : null
     lines.push({
       line: i + 1,
       date,
@@ -35,9 +37,9 @@ export const parseUob: Parser = (rawLines, asOf) => {
       amount,
       direction: m[7] ? 'credit' : 'debit',
       text: m[5],
-      installment: marker ? { k: Number(marker[1]), total: Number(marker[2]) } : null,
-      // A plan's period prints as "<shop> PRIN 003/006" and its interest as "<shop> INT 003/006".
-      isInterest: /INTEREST/i.test(m[5]) || (!!marker && /\sINT\s+\d{3}\/\d{3}$/.test(m[5])),
+      installment,
+      // A plan's period prints as "<shop> PRIN 01/06" and its interest as "<shop> INT 01/06".
+      isInterest: /INTEREST/i.test(m[5]) || (!!installment && /\sINT\s+\d{2,3}\/\d{2,3}$/.test(m[5])),
     })
   })
   if (lines.length === 0) return null

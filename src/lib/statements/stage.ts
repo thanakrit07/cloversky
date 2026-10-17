@@ -52,6 +52,7 @@ export interface PlanRef {
   final?: number | null
   /** The interest line it posts beside each period (0036); null when monthly is the whole charge. */
   interest?: number | null
+  name?: string
 }
 
 export interface StageContext {
@@ -131,19 +132,64 @@ const PLAN_WINDOW_DAYS = 20
 function coveringPlan(plans: PlanRef[], instrument: string, { k, total }: { k: number; total: number }, when: string): PlanRef | undefined {
   return plans.find((p) => p.instrument === instrument && p.total === total && days(periodDate(p.startDate, k), when) <= PLAN_WINDOW_DAYS)
 }
-export const planCovers = (...args: Parameters<typeof coveringPlan>) => coveringPlan(...args) !== undefined
+
+/** What a plan posts for period k, interest included; null when it never said. */
+function postsFor(p: PlanRef, k: number, total: number): number | null {
+  const principal = k === total ? (p.final ?? p.monthly) : p.monthly
+  return principal == null ? null : Math.round((principal + (p.interest ?? 0)) * 100) / 100
+}
+
+export interface PlanLine {
+  instrument: string
+  installment: { k: number; total: number }
+  when: string
+  /** What the card charged for the period, interest included. */
+  charged: number
+  name: string
+}
+
+/**
+ * Each period line's plan: same card and length, period k inside the window,
+ * and a plan takes one line per period — so two plans at the same period
+ * never share a line, and a line whose plan is still to be made is not
+ * handed someone else's. The plan whose amount agrees wins first, then the
+ * one whose name does; `loose` then gives a line the one plan left, so a
+ * plan at the wrong amount is still found and warned about.
+ */
+export function plansFor(plans: PlanRef[], lines: PlanLine[], loose: boolean): (PlanRef | undefined)[] {
+  const out: (PlanRef | undefined)[] = lines.map(() => undefined)
+  const taken = new Set<string>()
+  const candidates = (l: PlanLine) =>
+    plans.filter((p, i) => !taken.has(`${i}:${l.installment.k}`) && p.instrument === l.instrument && p.total === l.installment.total && days(periodDate(p.startDate, l.installment.k), l.when) <= PLAN_WINDOW_DAYS)
+  const claim = (pick: (l: PlanLine, ps: PlanRef[]) => PlanRef | undefined) =>
+    lines.forEach((l, j) => {
+      if (out[j]) return
+      const p = pick(l, candidates(l))
+      if (!p) return
+      out[j] = p
+      taken.add(`${plans.indexOf(p)}:${l.installment.k}`)
+    })
+  claim((l, ps) => ps.find((p) => postsFor(p, l.installment.k, l.installment.total) === Math.round(l.charged * 100) / 100))
+  claim((l, ps) => ps.find((p) => !!p.name && shopName(p.name) === shopName(l.name)))
+  if (loose) claim((_, ps) => (ps.length === 1 ? ps[0] : undefined))
+  return out
+}
 
 /** The start date a plan needs for its period k to fall on `when`: k−1 months earlier. */
 export const planStartFor = (when: string, k: number) => periodDate(when, 2 - k)
 
-/** The shop's name without the "002/006" or "02/06" a card prints for the period. */
-export const withoutPeriodMarker = (text: string) => text.replace(/^\d{2,3}\/\d{2,3}\s+|\s+\d{2,3}\/\d{2,3}$/g, '').trim()
+/** The shop's name without the "002/006" or "02/06" a card prints for the period, or UOB's "PRIN" before it. */
+export const withoutPeriodMarker = (text: string) =>
+  text
+    .replace(/^\d{2,3}\/\d{2,3}\s+|\s+\d{2,3}\/\d{2,3}$/g, '')
+    .trim()
+    .replace(/\s+PRIN$/i, '')
 
 /** The shop's name as both lines of a period print it, for pairing the two. */
 const shopName = (text: string) =>
   withoutPeriodMarker(text)
     .replace(/^IPP Interest$/i, '')
-    .replace(/\s+(PRIN|INT)$|\s+INT\d[\d.]*%$/i, '')
+    .replace(/\s+INT$|\s+INT\d[\d.]*%$/i, '')
     .trim()
     .toUpperCase()
 
@@ -205,6 +251,16 @@ export function stageStatements(files: StageInput[], ctx: StageContext): { rows:
     })
   }
 
+  const periodLines = files.flatMap(({ instrument, result }) =>
+    result.lines.filter((l) => l.installment && !l.isInterest && !dropped.has(l)).map((l) => ({ l, instrument })),
+  )
+  const assigned = plansFor(
+    ctx.plans,
+    periodLines.map(({ l, instrument }) => ({ instrument, installment: l.installment!, when: l.postedDate ?? l.date, charged: l.amount + (interestOf.get(l) ?? 0), name: l.text })),
+    true,
+  )
+  const planOf = new Map(periodLines.map(({ l }, i) => [l, assigned[i]]))
+
   for (const { instrument, result, fileName } of files) {
     for (const l of result.lines) {
       if (dropped.has(l)) continue
@@ -224,15 +280,15 @@ export function stageStatements(files: StageInput[], ctx: StageContext): { rows:
       if (l.installment) {
         if (pairedInterest.has(l)) continue // rides along with its period
         const lineInterest = interestOf.get(l) ?? 0
-        const plan = coveringPlan(ctx.plans, instrument, l.installment, l.postedDate ?? l.date)
+        // An interest line left unpaired takes no plan's period; it only asks whether one covers it.
+        const plan = l.isInterest ? coveringPlan(ctx.plans, instrument, l.installment, l.postedDate ?? l.date) : planOf.get(l)
         if (plan) {
           // The app posts these itself; say so when the period costs a different amount
           // from the card's. Compared in total, so a plan from before 0036 whose monthly
           // amount already holds the interest still agrees.
           const { k, total } = l.installment
-          const principal = k === total ? (plan.final ?? plan.monthly) : plan.monthly
           const charged = Math.round((l.amount + lineInterest) * 100) / 100
-          const posts = principal == null ? null : Math.round((principal + (plan.interest ?? 0)) * 100) / 100
+          const posts = postsFor(plan, k, total)
           if (!l.isInterest && posts != null && Math.abs(posts - charged) >= 0.01) {
             issues.push({
               code: 'plan_amount_differs',

@@ -15,7 +15,7 @@ import { useHousehold } from '@/lib/HouseholdContext'
 import type { EntryPrefill } from '@/lib/entryPrefill'
 import { useInstallments } from '@/lib/installments'
 import { InstallmentSheet } from '@/features/installments/InstallmentSheet'
-import { planCovers, planStartFor, withoutPeriodMarker, type PlanRef } from '@/lib/statements/stage'
+import { planStartFor, plansFor, withoutPeriodMarker, type PlanRef } from '@/lib/statements/stage'
 import { parseCsvText } from '@/lib/import/parseCsv'
 import { applyCounterparties, applyStatementRows, buildStatementRows, normalizeStatementText, SHARED, unknownNames, type StatementRow } from '@/lib/statementImport'
 import {
@@ -140,7 +140,7 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
     () =>
       (installments ?? []).flatMap((i) => {
         const instrument = (cards ?? []).find((c) => c.id === i.card_id)?.name ?? (accounts ?? []).find((a) => a.id === i.account_id)?.name
-        return instrument ? [{ instrument, total: i.total_periods, startDate: i.start_date, monthly: i.monthly_amount, final: i.final_amount, interest: i.period_interest }] : []
+        return instrument ? [{ instrument, total: i.total_periods, startDate: i.start_date, monthly: i.monthly_amount, final: i.final_amount, interest: i.period_interest, name: i.name }] : []
       }),
     [installments, cards, accounts],
   )
@@ -148,10 +148,19 @@ export function StatementImportScreen({ onClose }: { onClose: () => void }) {
   const rows = useMemo(() => {
     if (!records || !accounts || !cards || !categories || !existing) return null
     const nameOf = (r: StatementRow) => accounts.find((a) => a.id === r.fromAccountId)?.name ?? cards.find((c) => c.id === r.fromCardId)?.name ?? ''
-    // A plan made since the files were read posts these periods itself, so they leave the review.
-    return buildStatementRows(records, { accounts, cards, categories, existing }).filter(
-      (r) => !(r.needsPlan && r.installment && planCovers(plans, nameOf(r), r.installment, r.postedDate ?? r.date)),
+    // A plan made since the files were read posts these periods itself, so they leave the review —
+    // only the line it was made from (its amount or name agrees), never a neighbour at the same period.
+    // ponytail: a plan that predates the files can still claim a waiting line at its exact amount;
+    // exclude plans older than the read if two same-priced plans on one card ever collide.
+    const all = buildStatementRows(records, { accounts, cards, categories, existing })
+    const waiting = all.filter((r) => r.needsPlan && r.installment)
+    const made = plansFor(
+      plans,
+      waiting.map((r) => ({ instrument: nameOf(r), installment: r.installment!, when: r.postedDate ?? r.date, charged: r.amount + (r.periodInterest ?? 0), name: r.description })),
+      false,
     )
+    const covered = new Set(waiting.filter((_, i) => made[i]))
+    return all.filter((r) => !covered.has(r))
   }, [records, accounts, cards, categories, existing, plans])
 
   const liveCategories = useMemo(() => (categories ?? []).filter((c) => !c.archived && !c.system), [categories])
